@@ -1,0 +1,20 @@
+# Build output
+build/
+universal-project-manager.jar
+
+# Runtime state (per-machine)
+logs/
+state/
+
+# Legacy artifacts from the predecessor implementation
+legacy/
+
+# Per-user workspace state (keep the initial workspace.jsonc, ignore personal state)
+workspaces/*/dashboard.jsonc
+workspaces/*/discovery.jsonc
+workspaces/*/diagram-layouts.jsonc
+workspaces/*/projects/
+
+# Misc
+*.log
+*.class

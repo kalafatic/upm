@@ -1,0 +1,24 @@
+{
+  // ============================================================================
+  // Universal Project Manager — application settings.
+  // Relocatable: no machine-specific paths are hardcoded in the application.
+  // ============================================================================
+  "application": {
+    "name": "Universal Project Manager",
+    "host": "127.0.0.1",
+    "port": 29080,
+    "portFallbackRange": 100,
+    "openBrowser": true,
+    "theme": "light",
+    "language": "en",
+    "defaultWorkspace": "default",
+    "defaultRepositoryDir": "~/git",
+    "monitorRefreshMs": 3000,
+    "logRetentionDays": 7,
+    "historyRetention": 200,
+    "confirmDestructive": true,
+    "autoSaveWorkspace": true,
+    "browserCommand": "",
+    "detectedTools": {}
+  }
+}
