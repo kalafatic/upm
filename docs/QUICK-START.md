@@ -6,7 +6,7 @@
 2. **Wait for the dashboard** — the browser opens automatically when the
    application is ready (a few seconds).
 3. **See your projects** — the initial workspace contains EVO, TRYST,
-   DCoder, DStudio and ENR.
+   DCode, DStudio and ENR.
 4. **Click Build, Run or Test** on a project row.
 5. **Watch progress** — Operations shows the live log, current module/tests
    and the result.
@@ -49,7 +49,7 @@ directory you choose (existing directories are never overwritten).
   deterministic: if 28080 is taken by another application, use an explicit
   port (`upm.sh run EVO headless 28100`); the app remembers the last working
   port for Launch All.
-- **TRYST / DCoder / DStudio** — Headless server or RCP (UI).
+- **TRYST / DCode / DStudio** — Headless server or RCP (UI).
 - **ENR** — native runtime server; the ENR monitor (dashboard widgets) shows
   devices, models, load/unload and inference activity.
 
