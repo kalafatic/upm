@@ -480,6 +480,101 @@ public final class Server {
             }
             case "/diagnostics" -> json(ex, 200, diag.project(id));
             case "/logs" -> json(ex, 200, runtimeLogJson(p));
+            case "/structure" -> {
+                if (!"GET".equals(method)) {
+                    json(ex, 405, err("GET required"));
+                    return;
+                }
+                Map<String, Object> m = new LinkedHashMap<>();
+                m.put("project", id);
+                m.put("live", Adapters.detectStructure(Path.of(p.repoDir), p.type));
+                Map<String, Object> snapshot = new LinkedHashMap<>();
+                snapshot.put("parentPom", p.parentPom);
+                snapshot.put("modules", p.modules);
+                snapshot.put("features", p.features);
+                snapshot.put("products", p.products);
+                snapshot.put("targetPlatforms", p.targetPlatforms);
+                snapshot.put("eclipseLaunchConfigs", p.eclipseLaunchConfigs);
+                snapshot.put("requiresJava", p.requiresJava);
+                snapshot.put("structureAt", p.structureAt);
+                m.put("persisted", snapshot);
+                m.put("adapterType", p.type);
+                m.put("operations", new ArrayList<>(p.operations.keySet()));
+                List<String> lcIds = new ArrayList<>();
+                for (Config.LaunchConfig lc : p.launchConfigs) {
+                    lcIds.add(lc.id);
+                }
+                m.put("launchConfigs", lcIds);
+                json(ex, 200, m);
+            }
+            case "/refresh" -> {
+                if (!"POST".equals(method)) {
+                    json(ex, 405, err("POST required"));
+                    return;
+                }
+                Adapters.DetectionResult d = Adapters.detect(Path.of(p.repoDir));
+                Map<String, Object> structure = Adapters.detectStructure(Path.of(p.repoDir), d.typeId);
+                List<String> modules = new ArrayList<>();
+                for (Map<String, Object> mi : Json.objList(structure, "modules")) {
+                    modules.add(Json.str(mi, "name"));
+                }
+                // Merge in newly proposed standard operations without touching
+                // any user-customized operation commands; replace operations
+                // whose embedded paths clearly point at a previous repository
+                // location.
+                Map<String, Config.CommandBlock> mergedOps = new LinkedHashMap<>(p.operations);
+                Map<String, String> propEnv = new LinkedHashMap<>();
+                String jdk = String.valueOf(Adapters.detectTools().getOrDefault("java21", ""));
+                if (!jdk.isEmpty()) {
+                    propEnv.put("JAVA_HOME", jdk);
+                }
+                String currentRepo = Path.of(p.repoDir).toAbsolutePath().toString();
+                String parentRepo = Path.of(p.repoDir).toAbsolutePath().getParent() == null
+                        ? "" : Path.of(p.repoDir).toAbsolutePath().getParent().toString();
+                for (Map.Entry<String, Config.CommandBlock> e : Adapters.get(d.typeId)
+                        .proposeOperations(Path.of(p.repoDir), propEnv).entrySet()) {
+                    Config.CommandBlock old = mergedOps.get(e.getKey());
+                    boolean stalePath = old != null && !parentRepo.isEmpty()
+                            && String.join(" ", old.cmd).contains(parentRepo)
+                            && !String.join(" ", old.cmd).contains(currentRepo);
+                    boolean staleMvnw = old != null
+                            && String.join(" ", old.cmd).contains("./mvnw")
+                            && !Files.exists(Path.of(p.repoDir, "mvnw"));
+                    if (old == null || stalePath || staleMvnw) {
+                        mergedOps.put(e.getKey(), e.getValue());
+                    }
+                }
+                Config.Project updated = new Config.Project(
+                        p.id, p.name, p.description, p.repoDir, p.repoUrl, d.typeId,
+                        d.confidence, "refresh", d.evidence, p.git, p.startupAfter,
+                        p.logLocations, p.configLocations, p.modelDirectories, p.apiBase,
+                        p.enrMonitor, p.warnings, mergedOps, p.testSuites,
+                        p.testContinueOnFailure, p.launchConfigs,
+                        Json.str(structure, "parentPom", ""),
+                        modules,
+                        Json.strList(structure, "features"),
+                        Json.strList(structure, "products"),
+                        Json.strList(structure, "targetPlatforms"),
+                        Json.strList(structure, "eclipseLaunchConfigs"),
+                        Json.str(structure, "requiresJava", ""),
+                        System.currentTimeMillis());
+                synchronized (Main.currentConfig) {
+                    for (int i = 0; i < Main.currentConfig.projects.size(); i++) {
+                        if (Main.currentConfig.projects.get(i).id.equals(p.id)) {
+                            Main.currentConfig.projects.set(i, updated);
+                            break;
+                        }
+                    }
+                    try {
+                        Main.currentConfig.save();
+                    } catch (IOException e) {
+                        json(ex, 500, err("Could not save workspace: " + e.getMessage()));
+                        return;
+                    }
+                }
+                json(ex, 200, Map.of("ok", true, "type", d.typeId,
+                        "confidence", d.confidence, "structure", structure));
+            }
             case "/stop" -> {
                 if (!"POST".equals(method)) {
                     json(ex, 405, err("POST required"));
@@ -654,6 +749,11 @@ public final class Server {
         if (lcs.isEmpty()) {
             lcs = detection.proposedLaunchConfigs;
         }
+        Map<String, Object> structure = Adapters.detectStructure(Path.of(repoDir), type);
+        List<String> moduleNames = new ArrayList<>();
+        for (Map<String, Object> mi : Json.objList(structure, "modules")) {
+            moduleNames.add(Json.str(mi, "name"));
+        }
         Config.Project project = new Config.Project(
                 id,
                 Json.str(body, "name", id),
@@ -673,7 +773,15 @@ public final class Server {
                 operations,
                 suites,
                 continueOnFailure,
-                lcs);
+                lcs,
+                Json.str(structure, "parentPom", ""),
+                moduleNames,
+                Json.strList(structure, "features"),
+                Json.strList(structure, "products"),
+                Json.strList(structure, "targetPlatforms"),
+                Json.strList(structure, "eclipseLaunchConfigs"),
+                Json.str(structure, "requiresJava", ""),
+                System.currentTimeMillis());
         List<String> errors = new ArrayList<>();
         for (Config.LaunchConfig lc : project.launchConfigs) {
             if (lc.launcher == null || lc.launcher.isBlank()) {
@@ -765,7 +873,15 @@ public final class Server {
                 operations,
                 suites,
                 continueOnFailure,
-                lcs);
+                lcs,
+                p.parentPom,
+                p.modules,
+                p.features,
+                p.products,
+                p.targetPlatforms,
+                p.eclipseLaunchConfigs,
+                p.requiresJava,
+                p.structureAt);
     }
 
     private List<String> validateProjectUpdate(Config cfg, Config.Project updated) {
@@ -973,8 +1089,8 @@ public final class Server {
                 list.add(new Config.LaunchConfig(newId, src.name + " (copy)", src.kind,
                         src.launcher, new ArrayList<>(src.args), new LinkedHashMap<>(src.env),
                         src.workDir, src.port, src.portFixed, src.requiresDisplay, src.readiness,
-                        new ArrayList<>(src.readyMarkers), src.stopGraceSeconds,
-                        src.startupTimeoutMs, false));
+                        new ArrayList<>(src.readyMarkers), new ArrayList<>(src.shutdownMarkers),
+                        src.stopGraceSeconds, src.startupTimeoutMs, false));
                 replaceLaunchConfigs(cfg, p, list);
                 json(ex, 200, Map.of("ok", true));
             }
@@ -988,8 +1104,8 @@ public final class Server {
                     list.add(new Config.LaunchConfig(lc.id, lc.name, lc.kind, lc.launcher,
                             new ArrayList<>(lc.args), new LinkedHashMap<>(lc.env), lc.workDir,
                             lc.port, lc.portFixed, lc.requiresDisplay, lc.readiness,
-                            new ArrayList<>(lc.readyMarkers), lc.stopGraceSeconds,
-                            lc.startupTimeoutMs, lc.id.equals(lcId)));
+                            new ArrayList<>(lc.readyMarkers), new ArrayList<>(lc.shutdownMarkers),
+                            lc.stopGraceSeconds, lc.startupTimeoutMs, lc.id.equals(lcId)));
                 }
                 replaceLaunchConfigs(cfg, p, list);
                 json(ex, 200, Map.of("ok", true));
@@ -1049,6 +1165,7 @@ public final class Server {
                 Json.bool(l, "requiresDisplay", false),
                 readiness,
                 Json.strList(l, "readyMarkers"),
+                Json.strList(l, "shutdownMarkers"),
                 Json.integer(l, "stopGraceSeconds", 20),
                 Json.integer(l, "startupTimeoutSeconds", 180) * 1000L,
                 Json.bool(l, "default", isDefault));
@@ -1369,9 +1486,15 @@ public final class Server {
                     return;
                 }
                 boolean validType = List.of("build", "cleanBuild", "update", "test", "package",
-                        "verify", "install", "run", "stop", "restart").contains(type);
+                        "verify", "install", "validate", "buildModule", "run", "stop", "restart",
+                        "buildProduct", "validateProduct", "buildFeatures", "buildPlugins",
+                        "exportProduct", "exportLinux", "exportWindows", "exportMacosx",
+                        "exportAll", "buildP2Repository", "publishUpdateSite",
+                        "validateUpdateRepository", "inspectVersions")
+                        .contains(type);
                 boolean validGlobal = List.of("launchAll", "stopAll", "restartAll").contains(type);
-                boolean validGit = List.of("gitFetch", "gitPull", "gitPush", "gitCommit").contains(type);
+                boolean validGit = List.of("gitFetch", "gitPull", "gitPush", "gitCommit",
+                        "checkUpdates", "updateAll").contains(type);
                 boolean validProfile = List.of("profileLaunch", "profileStop").contains(type);
                 if (!validType && !validGlobal && !validGit && !validProfile) {
                     json(ex, 400, err("Invalid operation type: " + type));
@@ -1847,6 +1970,14 @@ public final class Server {
                 && !ps.runtimeState.equals("STOPPED") && !ps.runtimeState.equals("FAILED")
                 ? System.currentTimeMillis() - ps.startedAt : 0);
         List<String> ops = new ArrayList<>(p.operations.keySet());
+        if ("eclipse-tycho".equals(p.type)) {
+            for (String special : List.of("validateProduct", "validateUpdateRepository",
+                    "inspectVersions")) {
+                if (!ops.contains(special)) {
+                    ops.add(special);
+                }
+            }
+        }
         m.put("operations", ops);
         List<Map<String, Object>> lcs = new ArrayList<>();
         for (Config.LaunchConfig lc : p.launchConfigs) {
@@ -1860,6 +1991,26 @@ public final class Server {
             lcs.add(lm);
         }
         m.put("launchConfigs", lcs);
+        Map<String, Object> structure = new LinkedHashMap<>();
+        structure.put("parentPom", p.parentPom);
+        structure.put("modules", p.modules);
+        structure.put("features", p.features);
+        structure.put("products", p.products);
+        structure.put("targetPlatforms", p.targetPlatforms);
+        structure.put("eclipseLaunchConfigs", p.eclipseLaunchConfigs);
+        structure.put("requiresJava", p.requiresJava);
+        structure.put("structureAt", p.structureAt);
+        Map<String, Object> liveStructure = Adapters.detectStructure(Path.of(p.repoDir), p.type);
+        structure.put("productUid", Json.str(liveStructure, "productUid", ""));
+        structure.put("productName", Json.str(liveStructure, "productName", ""));
+        structure.put("productVersion", Json.str(liveStructure, "productVersion", ""));
+        structure.put("updateRepository", Json.str(liveStructure, "updateRepository", ""));
+        structure.put("updateRepositoryExists",
+                Json.bool(liveStructure, "updateRepositoryExists", false));
+        structure.put("productOutput", Json.str(liveStructure, "productOutput", ""));
+        structure.put("productOutputExists", Json.bool(liveStructure, "productOutputExists", false));
+        structure.put("platforms", Json.strList(liveStructure, "platforms"));
+        m.put("structure", structure);
         State.Op current = null;
         synchronized (state.ops) {
             for (State.Op op : state.ops.values()) {
@@ -1873,6 +2024,7 @@ public final class Server {
         if (withDetail) {
             m.put("git", gitStatus(p));
             m.put("lastBuild", opResult(lastOp(p.id, "build")));
+            m.put("lastExport", opResult(lastOp(p.id, "exportProduct")));
             m.put("lastTest", opResult(lastOp(p.id, "test")));
             m.put("lastUpdate", opResult(lastOp(p.id, "update")));
         }
@@ -2256,6 +2408,7 @@ public final class Server {
                     Json.bool(l, "requiresDisplay", false),
                     readiness,
                     Json.strList(l, "readyMarkers"),
+                    Json.strList(l, "shutdownMarkers"),
                     Json.integer(l, "stopGraceSeconds", 20),
                     Json.integer(l, "startupTimeoutSeconds", 180) * 1000L,
                     Json.bool(l, "default", out.isEmpty())));

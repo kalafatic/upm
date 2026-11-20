@@ -52,6 +52,10 @@ public final class Proc {
         return runDir(projectId, launchConfigId).resolve("crashed");
     }
 
+    public Path exitCodeFile(String projectId, String launchConfigId) {
+        return runDir(projectId, launchConfigId).resolve("exit-code");
+    }
+
     public static String runtimeLogKey(String projectId, String launchConfigId) {
         return projectId + "/" + launchConfigId;
     }
@@ -99,6 +103,10 @@ public final class Proc {
             }
             if (conflict) {
                 ps.runtimeState = "EXTERNAL";
+                long extStart = earliestExternalStart(findExternalPids(p));
+                if (extStart > 0) {
+                    ps.startedAt = extStart;
+                }
                 return "A process that belongs to " + p.id
                         + " is already running the requested service on the configured port: "
                         + external + ". Stop it explicitly with the external flag if needed.";
@@ -106,7 +114,12 @@ public final class Proc {
         }
 
         Path launcher = resolveLauncher(p, lc.launcher);
-        if (!Files.isExecutable(launcher)) {
+        boolean jarKind = "jar".equals(lc.kind);
+        if (jarKind) {
+            if (!Files.isRegularFile(launcher)) {
+                return "JAR launcher not found: " + launcher + ". Run a build first.";
+            }
+        } else if (!Files.isExecutable(launcher)) {
             return "Launcher not found or not executable: " + launcher
                     + ". Run a build first.";
         }
@@ -175,6 +188,10 @@ public final class Proc {
         Path log = runtimeLog(p.id, lc.id);
         List<String> cmdline = new ArrayList<>();
         cmdline.add("setsid");
+        if (jarKind) {
+            cmdline.add(javaForLaunch(lc));
+            cmdline.add("-jar");
+        }
         cmdline.add(launcher.toString());
         cmdline.addAll(args);
 
@@ -201,6 +218,23 @@ public final class Proc {
                     + " [cmd: " + String.join(" ", cmdline) + "]";
             return "Failed to start process: " + e.getMessage();
         }
+
+        // Record the real exit code when the process terminates so the watchdog
+        // can distinguish a graceful shutdown from a crash.
+        Path exitCodeFile = exitCodeFile(p.id, lc.id);
+        try {
+            Files.deleteIfExists(exitCodeFile);
+        } catch (IOException ignored) {
+            // best effort
+        }
+        proc.onExit().thenAccept(ph -> {
+            try {
+                Files.writeString(exitCodeFile, String.valueOf(ph.exitValue()));
+            } catch (IOException e) {
+                Main.log("WARN", "Could not record exit code for " + p.id + ": "
+                        + e.getMessage());
+            }
+        });
 
         long pid = proc.pid();
         // Poll the process group until setsid() took effect; never record the
@@ -344,6 +378,24 @@ public final class Proc {
         r = r.replace("{java21}", String.valueOf(Adapters.detectTools().getOrDefault("java21", "java")));
         r = r.replace("{java25}", String.valueOf(Adapters.detectTools().getOrDefault("java25", "java")));
         return r;
+    }
+
+    /** Resolves the java binary used to execute a JAR launch configuration. */
+    private String javaForLaunch(Config.LaunchConfig lc) {
+        String home = lc.env == null ? null : lc.env.get("JAVA_HOME");
+        if (home != null && !home.isBlank()) {
+            home = home.replace("{java21}",
+                    String.valueOf(Adapters.detectTools().getOrDefault("java21", "")));
+            home = home.replace("{java25}",
+                    String.valueOf(Adapters.detectTools().getOrDefault("java25", "")));
+            if (home.isBlank() || home.startsWith("{")) {
+                home = null;
+            }
+        }
+        if (home == null || home.isBlank()) {
+            home = System.getProperty("java.home");
+        }
+        return Path.of(home, "bin", "java").toString();
     }
 
     private Pattern buildMarker(Config.LaunchConfig lc) {
@@ -501,6 +553,7 @@ public final class Proc {
             ps.runtimeState = "STOPPED";
             ps.pid = -1;
             ps.launchConfig = "";
+            ps.startedAt = -1;
             // boundPort intentionally kept: last known working port for relaunch.
             ps.lastError = "";
             state.notify("info", projectId, "Stopped", "process terminated cleanly", "");
@@ -530,6 +583,8 @@ public final class Proc {
         if (matches.isEmpty()) {
             ps.runtimeState = "STOPPED";
             ps.externalDetail = "";
+            ps.startedAt = -1;
+            ps.lastError = "";
             return null;
         }
         List<Long> pids = new ArrayList<>();
@@ -568,6 +623,8 @@ public final class Proc {
         }
         ps.runtimeState = "STOPPED";
         ps.externalDetail = "";
+        ps.startedAt = -1;
+        ps.lastError = "";
         state.notify("info", projectId, "Stopped external process", "pids " + pids, "");
         return null;
     }
@@ -578,6 +635,9 @@ public final class Proc {
         State.ProjectState ps = state.projects.get(projectId);
         if (ps == null) {
             return null;
+        }
+        if (ps.runtimeState.equals("EXTERNAL")) {
+            return watchExternal(projectId, ps);
         }
         if (!ps.runtimeState.equals("RUNNING") && !ps.runtimeState.equals("READY")
                 && !ps.runtimeState.equals("STARTING")) {
@@ -590,28 +650,176 @@ public final class Proc {
         if (isAlive(pid)) {
             return null;
         }
-        boolean stopping = ps.runtimeState.equals("STOPPING");
-        ps.runtimeState = "FAILED";
-        ps.pid = -1;
         String lcId = ps.launchConfig.isBlank() ? "run" : ps.launchConfig;
-        try {
-            Files.createFile(crashMarker(projectId, lcId));
-        } catch (IOException ignored) {
-            // best effort
-        }
+        String tail = tailLog(runtimeLog(projectId, lcId), 800);
+        int exitCode = readExitCodeWait(projectId, lcId);
+        // A process that exits during STARTING is a failed start regardless of
+        // how cleanly it shut down; a READY/RUNNING process that shuts down
+        // gracefully is simply stopped.
+        boolean graceful = !ps.runtimeState.equals("STARTING")
+                && exitedGracefully(projectId, lcId, exitCode, tail);
+        ps.pid = -1;
         try {
             Files.deleteIfExists(pidFile(projectId, lcId));
         } catch (IOException ignored) {
             // best effort
         }
-        String tail = tailLog(runtimeLog(projectId, lcId), 800);
-        ps.lastError = "Process exited unexpectedly." + (tail.isEmpty() ? "" : "\n" + tail);
-        if (!stopping) {
-            state.notify("error", projectId, "Runtime crashed",
-                    "pid " + pid + " exited unexpectedly",
-                    "See runtime log: " + runtimeLog(projectId, lcId));
+        if (graceful) {
+            ps.runtimeState = "STOPPED";
+            ps.startedAt = -1;
+            ps.launchConfig = "";
+            ps.lastError = "";
+            ps.exitCode = exitCode;
+            try {
+                Files.deleteIfExists(crashMarker(projectId, lcId));
+            } catch (IOException ignored) {
+                // best effort
+            }
+            state.notify("info", projectId, "Runtime stopped",
+                    "Process " + pid + " exited gracefully"
+                            + (exitCode != Integer.MIN_VALUE ? " (exit code " + exitCode + ")" : "")
+                            + ".",
+                    "Start it again when needed.");
+            return null;
         }
+        ps.runtimeState = "FAILED";
+        ps.exitCode = exitCode;
+        try {
+            Files.createFile(crashMarker(projectId, lcId));
+        } catch (IOException ignored) {
+            // best effort
+        }
+        ps.lastError = "Process exited unexpectedly"
+                + (exitCode != Integer.MIN_VALUE ? " with exit code " + exitCode : "")
+                + "." + (tail.isEmpty() ? "" : "\n" + tail);
+        state.notify("error", projectId, "Runtime crashed",
+                "pid " + pid + " exited unexpectedly"
+                        + (exitCode != Integer.MIN_VALUE ? " (exit code " + exitCode + ")" : ""),
+                "See runtime log: " + runtimeLog(projectId, lcId));
         return "Project " + projectId + " process " + pid + " exited.";
+    }
+
+    /** Tracks pre-existing (non-managed) processes: keeps uptime fresh and
+     *  transitions to STOPPED once they are gone. */
+    private String watchExternal(String projectId, State.ProjectState ps) {
+        Config.Project p = Main.currentConfig != null
+                ? Main.currentConfig.project(projectId) : null;
+        List<long[]> pids = p != null ? findExternalPids(p) : List.of();
+        if (!pids.isEmpty()) {
+            ps.externalDetail = describePids(pids);
+            long start = earliestExternalStart(pids);
+            if (start > 0) {
+                ps.startedAt = start;
+            }
+            if (!ps.lastError.isBlank()) {
+                // Stale error from a previous run: the service is live again.
+                ps.lastError = "";
+            }
+            return null;
+        }
+        if (ps.externalDetail.isBlank() && ps.runtimeState.equals("EXTERNAL")) {
+            ps.runtimeState = "STOPPED";
+            ps.startedAt = -1;
+            return null;
+        }
+        ps.runtimeState = "STOPPED";
+        ps.externalDetail = "";
+        ps.startedAt = -1;
+        ps.lastError = "";
+        state.notify("info", projectId, "External process exited",
+                "The external process is no longer running.", "");
+        return null;
+    }
+
+    /** Public classification helper (used on startup reconciliation). */
+    public boolean gracefulExit(String projectId, String lcId) {
+        int code = readExitCode(projectId, lcId);
+        String tail = tailLog(runtimeLog(projectId, lcId), 800);
+        return exitedGracefully(projectId, lcId, code, tail);
+    }
+
+    /** True when the process ended in a deliberate, orderly shutdown. */
+    private boolean exitedGracefully(String projectId, String lcId, int exitCode,
+            String logTail) {
+        if (exitCode == 0 || exitCode == 143) { // 143 = terminated by SIGTERM
+            return true;
+        }
+        Config.Project p = Main.currentConfig != null
+                ? Main.currentConfig.project(projectId) : null;
+        Config.LaunchConfig lc = p != null ? p.launch(lcId) : null;
+        List<String> markers = lc != null && lc.shutdownMarkers != null
+                ? lc.shutdownMarkers : Config.LaunchConfig.DEFAULT_SHUTDOWN_MARKERS;
+        String lower = logTail.toLowerCase(java.util.Locale.ROOT);
+        for (String m : markers) {
+            if (lower.contains(m.toLowerCase(java.util.Locale.ROOT))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** Reads the recorded exit code, briefly waiting for the onExit listener. */
+    private int readExitCodeWait(String projectId, String lcId) {
+        for (int i = 0; i < 6; i++) {
+            int code = readExitCode(projectId, lcId);
+            if (code != Integer.MIN_VALUE) {
+                return code;
+            }
+            try {
+                Thread.sleep(250);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
+            }
+        }
+        return Integer.MIN_VALUE;
+    }
+
+    private int readExitCode(String projectId, String lcId) {
+        try {
+            Path f = exitCodeFile(projectId, lcId);
+            if (!Files.exists(f)) {
+                return Integer.MIN_VALUE;
+            }
+            String s = Files.readString(f).strip();
+            return s.isEmpty() ? Integer.MIN_VALUE : Integer.parseInt(s);
+        } catch (Exception e) {
+            return Integer.MIN_VALUE;
+        }
+    }
+
+    /** Wall-clock start time of a process (boot time + starttime ticks). */
+    private long processStartMs(long pid) {
+        try {
+            String stat = Files.readString(Path.of("/proc", String.valueOf(pid), "stat"));
+            int close = stat.lastIndexOf(')');
+            String[] fields = stat.substring(close + 2).split(" ");
+            if (fields.length <= 19) {
+                return -1;
+            }
+            long startTicks = Long.parseLong(fields[19]);
+            String boot = Files.readString(Path.of("/proc", "stat"));
+            for (String line : boot.split("\n")) {
+                if (line.startsWith("btime ")) {
+                    long btime = Long.parseLong(line.substring(6).trim());
+                    return btime * 1000L + startTicks * 10L;
+                }
+            }
+            return -1;
+        } catch (Exception e) {
+            return -1;
+        }
+    }
+
+    private long earliestExternalStart(List<long[]> pids) {
+        long earliest = -1;
+        for (long[] m : pids) {
+            long t = processStartMs(m[0]);
+            if (t > 0 && (earliest < 0 || t < earliest)) {
+                earliest = t;
+            }
+        }
+        return earliest;
     }
 
     // ------------------------------------------------------------- ownership
@@ -734,12 +942,18 @@ public final class Proc {
     }
 
     private String findExternal(Config.Project p) {
-        List<long[]> pids = findExternalPids(p);
+        return describePids(findExternalPids(p));
+    }
+
+    private static String describePids(List<long[]> pids) {
         if (pids.isEmpty()) {
             return "";
         }
         StringBuilder sb = new StringBuilder();
         for (long[] m : pids) {
+            if (sb.length() > 0) {
+                sb.append(' ');
+            }
             sb.append("pid ").append(m[0]);
         }
         return sb.toString();

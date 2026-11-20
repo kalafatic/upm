@@ -309,7 +309,9 @@ function buildProgressWidget() {
   const d = document.createElement("div");
   d.innerHTML = "<h3>Build progress</h3>";
   const builds = (state.ops.active || []).filter((o) =>
-    ["build", "cleanBuild", "update", "package", "verify", "install"].includes(o.type));
+    ["build", "cleanBuild", "update", "package", "verify", "install", "buildProduct",
+      "buildFeatures", "buildPlugins", "exportProduct", "exportLinux", "exportWindows",
+      "exportMacosx", "exportAll", "buildP2Repository", "publishUpdateSite"].includes(o.type));
   if (!builds.length) {
     d.appendChild(el("div", "muted", "No builds running."));
     return d;
@@ -813,8 +815,8 @@ function renderProjects() {
   $("#project-detail-title").innerHTML = esc(p.name) +
     ' <span class="muted">' + esc(p.id) + "</span>";
   const tabs = $("#project-tabs");
-  const tabDefs = [["overview", "Overview"], ["git", "Git"], ["build", "Build"],
-    ["launch", "Launch"], ["logs", "Logs"], ["config", "Configuration"]];
+  const tabDefs = [["overview", "Overview"], ["structure", "Structure"], ["git", "Git"],
+    ["build", "Build"], ["launch", "Launch"], ["logs", "Logs"], ["config", "Configuration"]];
   if (tabs.dataset.project !== p.id) {
     tabs.dataset.project = p.id;
     tabs.innerHTML = "";
@@ -831,6 +833,7 @@ function renderProjects() {
   const body = $("#project-tab-body");
   switch (selectedTab) {
     case "overview": renderOverviewTab(p, body); break;
+    case "structure": renderStructureTab(p, body); break;
     case "git": renderGitTab(p, body); break;
     case "build": renderBuildTab(p, body); break;
     case "launch": renderLaunchTab(p, body); break;
@@ -869,6 +872,15 @@ function buildContextMenu(anchor, p) {
   }
   items.push(["Git fetch", () => startOp("gitFetch", p.id).then(() => toast("info", p.id, "git fetch started"))
     .catch((e) => toast("error", p.id, e.message))]);
+  const modules = (p.structure && p.structure.modules) || [];
+  if (modules.length) {
+    items.push(["Build module…", () => {
+      const m = window.prompt("Module to build (with dependencies):", modules[0]);
+      if (m) startOp("buildModule", p.id, null, null, { module: m.trim() })
+        .then(() => toast("info", p.id, "Module build started"))
+        .catch((e) => toast("error", p.id, e.message));
+    }]);
+  }
   items.push(["Unregister project…", () => openUnregister(p)]);
   items.push(["Delete local repository…", () => openDeleteRepo(p)]);
   for (const [label, fn] of items) {
@@ -893,7 +905,16 @@ function buildContextMenu(anchor, p) {
 
 function opLabel(k) {
   return { build: "Build", cleanBuild: "Clean Build", update: "Resolve Dependencies",
-    test: "Test", package: "Package", verify: "Verify", install: "Install" }[k] || k;
+    test: "Test", package: "Package", verify: "Verify", install: "Install",
+    validate: "Validate", buildModule: "Build Module…", checkUpdates: "Check Updates",
+    updateAll: "Update All",
+    buildProduct: "Build Product", validateProduct: "Validate Product",
+    buildFeatures: "Build Features", buildPlugins: "Build Plugins",
+    exportProduct: "Export Product", exportLinux: "Export Linux",
+    exportWindows: "Export Windows", exportMacosx: "Export macOS",
+    exportAll: "Export All Platforms", buildP2Repository: "Build p2 Repository",
+    publishUpdateSite: "Publish Update Site", validateUpdateRepository: "Validate Update Repository",
+    inspectVersions: "Inspect Published Versions" }[k] || k;
 }
 
 function renderOverviewTab(p, body) {
@@ -905,6 +926,7 @@ function renderOverviewTab(p, body) {
     ["Repository", p.repoDir], ["Repository URL", p.repoUrl || "—"],
     ["Runtime state", p.runtimeState + (p.pid > 0 ? " (pid " + p.pid + ")" : "")],
     ["Launch config", p.launchConfig || "—"],
+    ...(p.runtimeState === "EXTERNAL" ? [["External process", p.externalDetail || "—"]] : []),
     ["Uptime", fmtDuration(p.uptimeMs)],
     ["Last error", p.lastError || "—"],
   ]) {
@@ -932,6 +954,60 @@ function renderOverviewTab(p, body) {
   body.appendChild(t);
 }
 
+function renderStructureTab(p, body) {
+  body.innerHTML = "";
+  const s = p.structure || {};
+  const hist = (state.ops.history || []).filter((o) => o.project === p.id);
+  const lastOk = (types, label) => {
+    for (const o of hist) {
+      if (types.includes(o.type)) {
+        return (o.status === "SUCCEEDED" ? "succeeded " : o.status.toLowerCase() + " ") + fmtTime(o.endMs || o.startMs);
+      }
+    }
+    return "not run";
+  };
+  const kv = el("div", "kv");
+  const rows = [
+    ["Product", s.productName ? s.productName + " (" + s.productUid + ")" : "—"],
+    ["Version", s.productVersion || "—"],
+    ["Build status", p.lastBuild ? p.lastBuild.status + " · " + fmtTime(p.lastBuild.endMs || p.lastBuild.startMs) : lastOk(["build", "cleanBuild"], "build")],
+    ["Export status", p.lastExport ? p.lastExport.status + " · " + fmtTime(p.lastExport.endMs || p.lastExport.startMs) : lastOk(["exportProduct", "exportAll"], "export")],
+    ["Target platform", (s.platforms || []).join(", ") || (s.targetPlatforms || []).join(", ") || "—"],
+    ["Output location", s.productOutput ? s.productOutput + (s.productOutputExists ? " (built)" : " (not built yet)") : "—"],
+    ["Update repository", s.updateRepository ? s.updateRepository + (s.updateRepositoryExists ? " (exists)" : " (not built yet)") : "—"],
+    ["Parent / aggregator", s.parentPom ? (s.parentPom === "pom.xml" ? "pom.xml (repository root)" : s.parentPom) : "—"],
+    ["Module count", (s.modules || []).length],
+    ["Features", (s.features || []).join(", ") || "—"],
+    ["Products", (s.products || []).join(", ") || "—"],
+    ["Eclipse launch configs", (s.eclipseLaunchConfigs || []).join(", ") || "—"],
+    ["Required Java", s.requiresJava ? "Java " + s.requiresJava : "Java 21 (default)"],
+    ["Structure snapshot", s.structureAt ? new Date(s.structureAt).toLocaleString() : "—"],
+  ];
+  for (const [k, v] of rows) {
+    kv.appendChild(el("div", "k", k));
+    kv.appendChild(el("div", "v", v));
+  }
+  body.appendChild(kv);
+  const refresh = el("button", "btn", "Refresh structure");
+  refresh.onclick = () => api("/api/projects/" + encodeURIComponent(p.id) + "/refresh", { method: "POST" })
+    .then(() => toast("info", p.id, "Structure refreshed"))
+    .catch((e) => toast("error", p.id, e.message));
+  body.appendChild(refresh);
+  if ((s.modules || []).length) {
+    body.appendChild(el("h4", "", "Reactor modules"));
+    const t = el("table", "tbl");
+    t.innerHTML = "<thead><tr><th>Module</th><th>Role</th></tr></thead>";
+    const tb = el("tbody");
+    for (const m of s.modules) {
+      const tr = el("tr");
+      tr.innerHTML = "<td class='mono'>" + esc(m.name || m) + "</td><td>" + esc(m.role || "—") + "</td>";
+      tb.appendChild(tr);
+    }
+    t.appendChild(tb);
+    body.appendChild(t);
+  }
+}
+
 function renderGitTab(p, body) {
   body.innerHTML = "";
   const g = p.git || {};
@@ -940,17 +1016,24 @@ function renderGitTab(p, body) {
     return;
   }
   const row = el("div", "row");
-  for (const [label, type] of [["Fetch", "gitFetch"], ["Pull", "gitPull"], ["Push", "gitPush"]]) {
+  for (const [label, type] of [["Fetch", "gitFetch"], ["Pull", "gitPull"], ["Push", "gitPush"],
+    ["Check Updates", "checkUpdates"], ["Update All…", "updateAll"]]) {
     const b = el("button", "btn", label);
     b.onclick = () => {
+      const run = (extra) => startOp(type, p.id, null, null, extra)
+        .then(() => toast("info", p.id, "git " + label + " started"))
+        .catch((e) => toast("error", p.id, e.message));
       if (type === "gitPush") {
         confirmDialog("Push " + p.id,
           "Push commits to the remote? This is externally visible and requires your confirmation.",
-          () => startOp(type, p.id).then(() => toast("info", p.id, "git " + label + " started"))
-            .catch((e) => toast("error", p.id, e.message)));
+          () => run());
+      } else if (type === "updateAll") {
+        confirmDialog("Update All — " + p.id,
+          "Fetch and analyze remote changes, then integrate them ONLY if a fast-forward is safe. " +
+          "Local changes are never discarded. Proceed?",
+          () => run({ confirm: true }));
       } else {
-        startOp(type, p.id).then(() => toast("info", p.id, "git " + label + " started"))
-          .catch((e) => toast("error", p.id, e.message));
+        run();
       }
     };
     row.appendChild(b);
@@ -1031,7 +1114,9 @@ function renderBuildTab(p, body) {
   body.innerHTML = "";
   body.appendChild(projectActions(p));
   const cur = activeOp(p.id);
-  if (cur && ["build", "cleanBuild", "update", "package", "verify", "install"].includes(cur.type)) {
+  if (cur && ["build", "cleanBuild", "update", "package", "verify", "install", "buildProduct",
+    "buildFeatures", "buildPlugins", "exportProduct", "exportLinux", "exportWindows",
+    "exportMacosx", "exportAll", "buildP2Repository", "publishUpdateSite"].includes(cur.type)) {
     body.appendChild(el("h4", "", "In progress: " + cur.type));
     const known = cur.progressKnown && cur.totalModules > 0;
     const prog = el("div", "progress" + (known ? "" : " indeterminate"));

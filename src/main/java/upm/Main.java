@@ -171,16 +171,27 @@ public final class Main {
                 continue;
             }
             if (ps.pid <= 0) {
-                if (!ps.runtimeState.equals("STOPPED") && !ps.runtimeState.equals("FAILED")) {
+                if (!ps.runtimeState.equals("STOPPED") && !ps.runtimeState.equals("FAILED")
+                        && !ps.runtimeState.equals("EXTERNAL")) {
                     ps.runtimeState = "STOPPED";
                 }
                 continue;
             }
             String lcId = ps.launchConfig.isBlank() ? "run" : ps.launchConfig;
             if (!Proc.isAlive(ps.pid)) {
-                ps.runtimeState = "FAILED";
+                long deadPid = ps.pid;
                 ps.pid = -1;
-                ps.lastError = "Process " + ps.pid + " was not running when the control center restarted.";
+                if (proc.gracefulExit(p.id, lcId)) {
+                    ps.runtimeState = "STOPPED";
+                    ps.startedAt = -1;
+                    ps.lastError = "";
+                    log("INFO", p.id + ": process " + deadPid
+                            + " exited gracefully while the control center was away");
+                } else {
+                    ps.runtimeState = "FAILED";
+                    ps.lastError = "Process " + deadPid
+                            + " was not running when the control center restarted.";
+                }
                 try {
                     Files.deleteIfExists(proc.pidFile(p.id, lcId));
                 } catch (IOException ignored) {

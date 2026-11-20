@@ -160,6 +160,13 @@ public final class Adapters {
                 port, portFixed, false, readiness, markers, 20, 180_000L, isDefault);
     }
 
+    /** Copies a launch configuration with a different environment map. */
+    static Config.LaunchConfig withEnv(Config.LaunchConfig lc, Map<String, String> env) {
+        return new Config.LaunchConfig(lc.id, lc.name, lc.kind, lc.launcher, lc.args, env,
+                lc.workDir, lc.port, lc.portFixed, lc.requiresDisplay, lc.readiness,
+                lc.readyMarkers, lc.stopGraceSeconds, lc.startupTimeoutMs, lc.isDefault);
+    }
+
     // ------------------------------------------------------------------- Maven
 
     public static final class MavenAdapter implements ProjectAdapter {
@@ -168,7 +175,7 @@ public final class Adapters {
 
         public Set<String> supportedOperations() {
             return new LinkedHashSet<>(List.of("build", "cleanBuild", "update", "test",
-                    "package", "verify", "install"));
+                    "package", "verify", "install", "validate"));
         }
 
         public boolean supportsLaunchKind(String kind) {
@@ -184,9 +191,17 @@ public final class Adapters {
             evidence.add("pom.xml present");
             if (pom.contains("tycho")) {
                 evidence.add("Tycho referenced in pom.xml — see the Eclipse Tycho adapter");
-                return new DetectionResult("eclipse-tycho", "DETECTED", evidence,
-                        List.of("maven"), List.of(), Map.of(
-                        "hint", "The POM uses Tycho; the Eclipse RCP/Tycho adapter provides product launches."));
+                // Delegate to the Tycho adapter so product/launch proposals are
+                // produced by the same code path as direct Tycho detection.
+                DetectionResult t = new TychoAdapter().detect(dir);
+                List<String> merged = new ArrayList<>(evidence);
+                for (String e : t.evidence) {
+                    if (!merged.contains(e)) {
+                        merged.add(e);
+                    }
+                }
+                return new DetectionResult("eclipse-tycho", t.confidence, merged,
+                        t.alternativeTypes, t.proposedLaunchConfigs, t.notes);
             }
             if (pom.contains("<packaging>pom</packaging>") && pom.contains("<module>")) {
                 evidence.add("Multi-module reactor POM");
@@ -202,8 +217,7 @@ public final class Adapters {
                 try (var stream = Files.list(target)) {
                     for (Path f : (Iterable<Path>) stream::iterator) {
                         String n = f.getFileName().toString();
-                        if (n.endsWith(".jar") && !n.endsWith("-sources.jar")
-                                && !n.endsWith("-javadoc.jar")) {
+                        if (isRunnableJarName(n)) {
                             String main = jarMainClass(f);
                             if (main != null && !main.isBlank()) {
                                 launches.add(launch("run-jar", "Executable JAR (" + n + ")",
@@ -216,27 +230,74 @@ public final class Adapters {
                     // skip
                 }
             }
+            // multi-module reactors: scan module target directories as well
+            // (standalone runtimes such as CLI/server modules live below the root)
+            for (String mod : detectModules(dir, "maven")) {
+                Path modDir = dir.resolve(mod);
+                if (!Files.isDirectory(modDir)) {
+                    continue;
+                }
+                Path modTarget = modDir.resolve("target");
+                if (!Files.isDirectory(modTarget)) {
+                    continue;
+                }
+                try (var stream = Files.list(modTarget)) {
+                    for (Path f : (Iterable<Path>) stream::iterator) {
+                        String n = f.getFileName().toString();
+                        if (!isRunnableJarName(n)) {
+                            continue;
+                        }
+                        String main = jarMainClass(f);
+                        if (main != null && !main.isBlank()) {
+                            String rel = dir.relativize(f).toString();
+                            launches.add(launch("run-" + mod + "-" + n.replace('.', '-'),
+                                    "Module JAR: " + mod + "/" + n, "jar", rel,
+                                    List.of(), 0, false, null, List.of(), launches.isEmpty()));
+                        }
+                    }
+                } catch (IOException ignored) {
+                    // skip
+                }
+            }
+            Map<String, String> notes = new LinkedHashMap<>();
+            notes.put("buildTool", "Maven (./mvnw when present)");
+            String requiredJava = requiredJavaFromPom(dir);
+            if (!requiredJava.isEmpty()) {
+                notes.put("requiresJava", requiredJava);
+                // JAR launchers built for a newer release need that JDK at runtime.
+                if (!launches.isEmpty()) {
+                    Map<String, String> jen = Map.of("JAVA_HOME", "{java" + requiredJava + "}");
+                    for (int i = 0; i < launches.size(); i++) {
+                        if (launches.get(i).kind.equals("jar")) {
+                            launches.set(i, withEnv(launches.get(i), jen));
+                        }
+                    }
+                }
+            }
             return new DetectionResult("maven", confidence, evidence, List.of(),
-                    launches, Map.of("buildTool", "Maven (./mvnw when present)"));
+                    launches, notes);
         }
 
         public Map<String, Config.CommandBlock> proposeOperations(Path repoDir, Map<String, String> env) {
             Map<String, Config.CommandBlock> ops = new LinkedHashMap<>();
             String mvn = hasFile(repoDir, "mvnw") ? "./mvnw" : "mvn";
+            Map<String, String> e = javaEnv(env, repoDir);
             ops.put("build", new Config.CommandBlock(List.of(mvn, "-B", "-DskipTests", "clean", "verify"),
-                    env, "repo", 240 * 60000L, 0, true));
+                    e, "repo", 240 * 60000L, 0, true));
             ops.put("cleanBuild", new Config.CommandBlock(List.of(mvn, "-B", "-DskipTests", "clean", "verify"),
-                    env, "repo", 240 * 60000L, 0, true));
+                    e, "repo", 240 * 60000L, 0, true));
             ops.put("update", new Config.CommandBlock(List.of(mvn, "-B", "-U", "-DskipTests", "clean", "verify"),
-                    env, "repo", 240 * 60000L, 0, true));
+                    e, "repo", 240 * 60000L, 0, true));
             ops.put("verify", new Config.CommandBlock(List.of(mvn, "-B", "verify"),
-                    env, "repo", 240 * 60000L, 0, true));
+                    e, "repo", 240 * 60000L, 0, true));
             ops.put("test", new Config.CommandBlock(List.of(mvn, "-B", "test"),
-                    env, "repo", 240 * 60000L, 0, true));
+                    e, "repo", 240 * 60000L, 0, true));
             ops.put("package", new Config.CommandBlock(List.of(mvn, "-B", "-DskipTests", "package"),
-                    env, "repo", 240 * 60000L, 0, true));
+                    e, "repo", 240 * 60000L, 0, true));
             ops.put("install", new Config.CommandBlock(List.of(mvn, "-B", "-DskipTests", "install"),
-                    env, "repo", 240 * 60000L, 0, true));
+                    e, "repo", 240 * 60000L, 0, true));
+            ops.put("validate", new Config.CommandBlock(List.of(mvn, "-B", "validate"),
+                    e, "repo", 30 * 60000L, 0, true));
             return ops;
         }
     }
@@ -300,7 +361,11 @@ public final class Adapters {
 
         public Set<String> supportedOperations() {
             return new LinkedHashSet<>(List.of("build", "cleanBuild", "update", "test",
-                    "package", "verify", "install"));
+                    "package", "verify", "install", "validate",
+                    "buildProduct", "validateProduct", "buildFeatures", "buildPlugins",
+                    "exportProduct", "exportLinux", "exportWindows", "exportMacosx",
+                    "exportAll", "buildP2Repository", "publishUpdateSite",
+                    "validateUpdateRepository", "inspectVersions"));
         }
 
         public boolean supportsLaunchKind(String kind) {
@@ -345,16 +410,26 @@ public final class Adapters {
             }
             List<Config.LaunchConfig> launches = new ArrayList<>();
             // Search for exported product launchers (already built products).
+            // Any executable file directly inside a product directory is a
+            // candidate; no application names are hardcoded.
             Path prodRoot = findProductRoot(dir);
             if (prodRoot != null) {
-                for (String entry : List.of("eclipse", "evo", "tryst", "dcode", "dstudio", "dcode-headless")) {
-                    Path launcher = prodRoot.resolve(entry);
-                    if (Files.isExecutable(launcher)) {
-                        String rel = dir.relativize(launcher).toString();
-                        launches.add(launch("product-" + entry, "Product: " + entry,
-                                "eclipse-product", rel, List.of("-nosplash", "-consoleLog"),
-                                0, false, null, List.of(), launches.isEmpty()));
+                try (var stream = Files.walk(prodRoot, 6)) {
+                    for (Path f : (Iterable<Path>) stream::iterator) {
+                        if (Files.isRegularFile(f) && Files.isExecutable(f)) {
+                            String name = f.getFileName().toString();
+                            if (name.endsWith(".sh") || name.endsWith(".ini")
+                                    || name.contains(".app")) {
+                                continue;
+                            }
+                            String rel = dir.relativize(f).toString();
+                            launches.add(launch("product-" + name, "Product: " + name,
+                                    "eclipse-product", rel, List.of("-nosplash", "-consoleLog"),
+                                    0, false, null, List.of(), launches.isEmpty()));
+                        }
                     }
+                } catch (IOException ignored) {
+                    // skip
                 }
             }
             return new DetectionResult("eclipse-tycho", confidence, evidence, alternatives,
@@ -363,21 +438,78 @@ public final class Adapters {
 
         public Map<String, Config.CommandBlock> proposeOperations(Path repoDir, Map<String, String> env) {
             Map<String, Config.CommandBlock> ops = new LinkedHashMap<>();
-            String mvn = hasFile(repoDir, "mvnw") ? "./mvnw" : "mvn";
+            String mvn = mavenCommand(repoDir);
+            Map<String, String> e = javaEnv(env, repoDir);
             ops.put("build", new Config.CommandBlock(List.of(mvn, "-B", "-DskipTests", "clean", "verify"),
-                    env, "repo", 240 * 60000L, 0, true));
+                    e, "repo", 240 * 60000L, 0, true));
             ops.put("cleanBuild", new Config.CommandBlock(List.of(mvn, "-B", "-DskipTests", "clean", "verify"),
-                    env, "repo", 240 * 60000L, 0, true));
+                    e, "repo", 240 * 60000L, 0, true));
             ops.put("update", new Config.CommandBlock(List.of(mvn, "-B", "-U", "-DskipTests", "clean", "verify"),
-                    env, "repo", 240 * 60000L, 0, true));
+                    e, "repo", 240 * 60000L, 0, true));
             ops.put("verify", new Config.CommandBlock(List.of(mvn, "-B", "verify"),
-                    env, "repo", 240 * 60000L, 0, true));
+                    e, "repo", 240 * 60000L, 0, true));
             ops.put("test", new Config.CommandBlock(List.of(mvn, "-B", "verify"),
-                    env, "repo", 240 * 60000L, 0, true));
+                    e, "repo", 240 * 60000L, 0, true));
             ops.put("package", new Config.CommandBlock(List.of(mvn, "-B", "-DskipTests", "package"),
-                    env, "repo", 240 * 60000L, 0, true));
+                    e, "repo", 240 * 60000L, 0, true));
             ops.put("install", new Config.CommandBlock(List.of(mvn, "-B", "-DskipTests", "install"),
-                    env, "repo", 240 * 60000L, 0, true));
+                    e, "repo", 240 * 60000L, 0, true));
+            ops.put("validate", new Config.CommandBlock(List.of(mvn, "-B", "validate"),
+                    e, "repo", 30 * 60000L, 0, true));
+            // Product export and p2 repository operations run the full reactor
+            // so the assembled update site always contains the fresh
+            // feature/plugin artifacts (repository modules may lack explicit
+            // Maven dependencies on the product feature).
+            String repoModule = repositoryModule(repoDir);
+            if (repoModule != null) {
+                String m = repoModule.replace("\\", "/");
+                long t = 240 * 60000L;
+                ops.put("buildProduct", new Config.CommandBlock(List.of(mvn, "-B", "-DskipTests",
+                        "clean", "verify"), e, "repo", t, 0, true));
+                ops.put("exportProduct", new Config.CommandBlock(List.of(mvn, "-B", "-DskipTests",
+                        "clean", "verify"), e, "repo", t, 0, true));
+                ops.put("exportLinux", new Config.CommandBlock(List.of(mvn, "-B", "-DskipTests",
+                        "clean", "verify", "-Plinux"), e, "repo", t, 0, true));
+                ops.put("exportWindows", new Config.CommandBlock(List.of(mvn, "-B", "-DskipTests",
+                        "clean", "verify", "-Pwindows"), e, "repo", t, 0, true));
+                ops.put("exportMacosx", new Config.CommandBlock(List.of(mvn, "-B", "-DskipTests",
+                        "clean", "verify", "-Pmacosx"), e, "repo", t, 0, true));
+                ops.put("exportAll", new Config.CommandBlock(List.of(mvn, "-B", "-DskipTests",
+                        "clean", "verify", "-Pall-platforms"), e, "repo", t, 0, true));
+                ops.put("buildP2Repository", new Config.CommandBlock(List.of(mvn, "-B", "-DskipTests",
+                        "package"), e, "repo", t, 0, true));
+                // Repo-relative paths keep the stored operation valid even
+                // when the project's repository directory moves.
+                String updRel = "updates/" + m.replace("/", "-");
+                String srcRel = m + "/target/repository";
+                ops.put("publishUpdateSite", new Config.CommandBlock(List.of("sh", "-c",
+                        "set -e; rm -rf '" + updRel + "'; mkdir -p '" + updRel + "'; cp -r '" + srcRel
+                        + "/.' '" + updRel + "/'; ls -la '" + updRel + "'"),
+                        e, "repo", 30 * 60000L, 0, true));
+            }
+            // Bundle/feature build operations across the reactor's plugins.
+            List<String> bundles = new ArrayList<>();
+            List<String> features = new ArrayList<>();
+            for (String mod : detectModules(repoDir, "eclipse-tycho")) {
+                String role = moduleRole(repoDir, mod);
+                if (role.equals("bundle")) {
+                    bundles.add(mod);
+                } else if (role.equals("feature")) {
+                    features.add(mod);
+                }
+            }
+            if (!bundles.isEmpty()) {
+                List<String> cmd = new ArrayList<>(List.of(mvn, "-B", "-DskipTests", "package", "-pl"));
+                cmd.addAll(bundles);
+                cmd.add("-am");
+                ops.put("buildPlugins", new Config.CommandBlock(cmd, e, "repo", 240 * 60000L, 0, true));
+            }
+            if (!features.isEmpty()) {
+                List<String> cmd = new ArrayList<>(List.of(mvn, "-B", "-DskipTests", "package", "-pl"));
+                cmd.addAll(features);
+                cmd.add("-am");
+                ops.put("buildFeatures", new Config.CommandBlock(cmd, e, "repo", 240 * 60000L, 0, true));
+            }
             return ops;
         }
     }
@@ -828,6 +960,36 @@ public final class Adapters {
         return String.valueOf(Math.max(1, n));
     }
 
+    /**
+     * Builds the JAVA_HOME environment for operation proposals: the JDK
+     * matching the maximum Java release required by the project's POMs takes
+     * precedence; otherwise an already-provided JAVA_HOME is honored and
+     * finally Java 21 is used as the default.
+     */
+    static Map<String, String> javaEnv(Map<String, String> env, Path repoDir) {
+        Map<String, String> e = new LinkedHashMap<>();
+        if (env != null) {
+            e.putAll(env);
+        }
+        Map<String, Object> tools = detectTools();
+        String required = requiredJavaFromPom(repoDir);
+        if (!required.isEmpty()) {
+            String jdk = String.valueOf(tools.getOrDefault("java" + required, ""));
+            if (!jdk.isBlank()) {
+                e.put("JAVA_HOME", jdk);
+            }
+            return e;
+        }
+        if (e.containsKey("JAVA_HOME") && !e.get("JAVA_HOME").isBlank()) {
+            return e;
+        }
+        String jdk = String.valueOf(tools.getOrDefault("java21", ""));
+        if (!jdk.isBlank()) {
+            e.put("JAVA_HOME", jdk);
+        }
+        return e;
+    }
+
     /** Counts build modules for common multi-module layouts (read-only). */
     public static List<String> detectModules(Path dir, String typeId) {
         List<String> out = new ArrayList<>();
@@ -881,8 +1043,310 @@ public final class Adapters {
         return out;
     }
 
-    static String jarMainClass(Path jar) {
-        try (JarFile jf = new JarFile(jar.toFile())) {
+    /**
+     * Structural metadata for a repository: authoritative parent/aggregator,
+     * reactor modules (with roles), feature/products/target definitions and
+     * Eclipse launch configurations. Read-only; no repository scripts are run.
+     */
+    public static Map<String, Object> detectStructure(Path dir, String typeId) {
+        Map<String, Object> s = new LinkedHashMap<>();
+        Path parent = parentPom(dir);
+        s.put("parentPom", parent == null ? "" : dir.relativize(parent).toString());
+        s.put("parentIsRepoRoot", parent != null && parent.equals(dir.resolve("pom.xml")));
+        s.put("mavenWrapper", hasFile(dir, "mvnw"));
+        List<String> modules = detectModules(dir, typeId);
+        List<Map<String, Object>> moduleInfo = new ArrayList<>();
+        List<String> testModules = new ArrayList<>();
+        for (String m : modules) {
+            Path md = dir.resolve(m);
+            Map<String, Object> mi = new LinkedHashMap<>();
+            mi.put("name", m);
+            String role = moduleRole(dir, m);
+            mi.put("role", role);
+            if (role.contains("test")) {
+                testModules.add(m);
+            }
+            moduleInfo.add(mi);
+        }
+        s.put("modules", moduleInfo);
+        s.put("moduleCount", modules.size());
+        s.put("testModules", testModules);
+        List<String> features = findPaths(dir, 5, "feature.xml");
+        s.put("features", features);
+        List<String> products = findPaths(dir, 6, "*.product");
+        s.put("products", products);
+        List<String> targets = findPaths(dir, 6, "*.target");
+        s.put("targetPlatforms", targets);
+        Map<String, String> pm = productMeta(dir, products);
+        if (pm != null) {
+            s.put("productUid", pm.getOrDefault("uid", ""));
+            s.put("productName", pm.getOrDefault("name", ""));
+            s.put("productVersion", pm.getOrDefault("version", ""));
+        }
+        String repoModule = repositoryModule(dir);
+        if (repoModule != null) {
+            Path repoDirPath = dir.resolve(repoModule);
+            s.put("updateRepository", repoModule + "/target/repository");
+            s.put("updateRepositoryExists",
+                    Files.isDirectory(repoDirPath.resolve("target/repository")));
+            s.put("productOutput", repoModule + "/target/products");
+            s.put("productOutputExists", Files.isDirectory(repoDirPath.resolve("target/products")));
+        }
+        s.put("platforms", platformProfiles(dir));
+        List<String> launches = findPaths(dir, 4, "*.launch");
+        s.put("eclipseLaunchConfigs", launches);
+        List<String> builtLaunchers = new ArrayList<>();
+        Path prodRoot = findProductRoot(dir);
+        if (prodRoot != null) {
+            try (var stream = Files.walk(prodRoot, 6)) {
+                for (Path f : (Iterable<Path>) stream::iterator) {
+                    if (Files.isRegularFile(f) && Files.isExecutable(f)) {
+                        String n = f.getFileName().toString();
+                        if (n.endsWith(".sh") || n.endsWith(".ini") || n.contains(".app")) {
+                            continue;
+                        }
+                        builtLaunchers.add(dir.relativize(f).toString());
+                    }
+                }
+            } catch (IOException ignored) {
+                // skip
+            }
+        }
+        s.put("builtProductLaunchers", builtLaunchers);
+        String requiredJava = requiredJavaFromPom(dir);
+        s.put("requiresJava", requiredJava);
+        return s;
+    }
+
+    /**
+     * Locates the authoritative parent/aggregator POM: the repository root
+     * pom.xml when present, otherwise the shallowest pom.xml with
+     * <packaging>pom</packaging> and <module> entries.
+     */
+    public static Path parentPom(Path dir) {
+        if (hasFile(dir, "pom.xml")) {
+            return dir.resolve("pom.xml");
+        }
+        Path best = null;
+        int bestDepth = Integer.MAX_VALUE;
+        try (var stream = Files.walk(dir, 5)) {
+            for (Path p : (Iterable<Path>) stream::iterator) {
+                if (p.equals(dir) || !p.getFileName().toString().equals("pom.xml")) {
+                    continue;
+                }
+                String pom = readFirstLines(p, 300);
+                if (pom.contains("<module>") || pom.contains("<packaging>pom</packaging>")) {
+                    int depth = p.getNameCount() - dir.getNameCount();
+                    if (depth < bestDepth) {
+                        bestDepth = depth;
+                        best = p;
+                    }
+                }
+            }
+        } catch (IOException ignored) {
+            // fall through
+        }
+        return best;
+    }
+
+    /** Selects a working Maven command: wrapper, Maven 3.9+ dist, else plain mvn. */
+    static String mavenCommand(Path repoDir) {
+        if (hasFile(repoDir, "mvnw")) {
+            return "./mvnw";
+        }
+        try (var dists = Files.list(Path.of(System.getProperty("user.home"), ".m2", "wrapper", "dists"))) {
+            for (Path d : (Iterable<Path>) dists::iterator) {
+                if (!d.getFileName().toString().startsWith("apache-maven-3.")) {
+                    continue;
+                }
+                try (var versions = Files.list(d)) {
+                    for (Path h : (Iterable<Path>) versions::iterator) {
+                        Path bin = h.resolve("bin/mvn");
+                        if (Files.isExecutable(bin)) {
+                            return bin.toString();
+                        }
+                    }
+                } catch (IOException ignored) {
+                    // try next
+                }
+            }
+        } catch (IOException ignored) {
+            // fall back to plain mvn
+        }
+        return "mvn";
+    }
+
+    /** Reactor module that assembles the product/p2 repository (eclipse-repository). */
+    static String repositoryModule(Path repoDir) {
+        for (String mod : detectModules(repoDir, "eclipse-tycho")) {
+            Path md = repoDir.resolve(mod);
+            if (!Files.isDirectory(md) || !Files.exists(md.resolve("pom.xml"))) {
+                continue;
+            }
+            if (readFirstLines(md.resolve("pom.xml"), 200).contains("eclipse-repository")) {
+                return mod;
+            }
+        }
+        return null;
+    }
+
+    /** Parses uid/name/version from a .product file (read-only, best effort). */
+    static Map<String, String> productMeta(Path dir, List<String> products) {
+        String repoModule = repositoryModule(dir);
+        List<String> ordered = new ArrayList<>(products);
+        ordered.sort((a, b) -> Integer.compare(
+                repoModule != null && a.startsWith(repoModule + "/") ? 0 : 1,
+                repoModule != null && b.startsWith(repoModule + "/") ? 0 : 1));
+        for (String rel : ordered) {
+            Path f = dir.resolve(rel);
+            if (!Files.isRegularFile(f)) {
+                continue;
+            }
+            String xml = readFirstLines(f, 60);
+            Matcher uid = Pattern.compile("<product[^>]*uid=\"([^\"]+)\"").matcher(xml);
+            Matcher name = Pattern.compile("<product[^>]*name=\"([^\"]+)\"").matcher(xml);
+            Matcher ver = Pattern.compile("<product[^>]*version=\"([^\"]+)\"").matcher(xml);
+            if (!uid.find()) {
+                continue;
+            }
+            Map<String, String> m = new LinkedHashMap<>();
+            m.put("uid", uid.group(1));
+            m.put("name", name.find() ? name.group(1) : "");
+            m.put("version", ver.find() ? ver.group(1) : "");
+            return m;
+        }
+        return null;
+    }
+
+    /** Export platform profiles/attributes declared in the root POM (read-only). */
+    static List<String> platformProfiles(Path dir) {
+        List<String> out = new ArrayList<>();
+        Path pom = dir.resolve("pom.xml");
+        if (!Files.isRegularFile(pom)) {
+            return out;
+        }
+        String xml = readFirstLines(pom, 4000);
+        Matcher m = Pattern.compile("<id>(linux|windows|macosx|all-platforms)</id>").matcher(xml);
+        while (m.find() && !out.contains(m.group(1))) {
+            out.add(m.group(1));
+        }
+        if (out.isEmpty()) {
+            Matcher env = Pattern.compile("<environment><os>([^<]+)</os><ws>([^<]+)</ws><arch>([^<]+)</arch>")
+                    .matcher(xml);
+            while (env.find()) {
+                out.add(env.group(1) + "/" + env.group(2) + "/" + env.group(3));
+            }
+        }
+        return out;
+    }
+
+    /** Classifies a reactor module directory by its role (read-only). */
+    static String moduleRole(Path repoDir, String module) {
+        Path md = repoDir.resolve(module);
+        if (!Files.isDirectory(md)) {
+            return "unknown";
+        }
+        if (Files.exists(md.resolve("feature.xml"))) {
+            return "feature";
+        }
+        if (findAny(md, 3, "*.product") != null) {
+            return "product";
+        }
+        if (findAny(md, 3, "*.target") != null) {
+            return "target-platform";
+        }
+        if (Files.exists(md.resolve("pom.xml"))) {
+            String pom = readFirstLines(md.resolve("pom.xml"), 200);
+            boolean tests = pom.contains("eclipse-test-plugin")
+                    || pom.contains("<scope>test</scope>");
+            if (pom.contains("eclipse-feature")) {
+                return "feature";
+            }
+            if (pom.contains("eclipse-repository")) {
+                return "repository";
+            }
+            if (pom.contains("eclipse-plugin") || pom.contains("eclipse-test-plugin")) {
+                return tests ? "test-bundle" : "bundle";
+            }
+            return "jar";
+        }
+        if (Files.exists(md.resolve("MANIFEST.MF"))) {
+            return "bundle";
+        }
+        return "unknown";
+    }
+
+    /** Java release required by any module POM (e.g. "25"); empty if <= 21. */
+    static String requiredJavaFromPom(Path dir) {
+        int max = 0;
+        try (var stream = Files.walk(dir, 5)) {
+            for (Path p : (Iterable<Path>) stream::iterator) {
+                String rel = dir.relativize(p).toString();
+                if (rel.contains("/target/") || rel.contains("/bin/")) {
+                    continue;
+                }
+                if (!p.getFileName().toString().equals("pom.xml")) {
+                    continue;
+                }
+                String pom = readFirstLines(p, 500);
+                Matcher m = Pattern.compile(
+                        "(?:<release>|<maven\\.compiler\\.release>)(\\d+)").matcher(pom);
+                while (m.find()) {
+                    try {
+                        max = Math.max(max, Integer.parseInt(m.group(1)));
+                    } catch (NumberFormatException ignored) {
+                        // skip
+                    }
+                }
+            }
+        } catch (IOException ignored) {
+            // fall through
+        }
+        return max >= 22 ? String.valueOf(max) : "";
+    }
+
+    /** Relative paths of files matching a name pattern (maxDepth). */
+    public static List<String> findPaths(Path dir, int maxDepth, String name) {
+        List<String> out = new ArrayList<>();
+        try (var stream = Files.walk(dir, maxDepth)) {
+            for (Path p : (Iterable<Path>) stream::iterator) {
+                if (p.equals(dir)) {
+                    continue;
+                }
+                String rel = dir.relativize(p).toString();
+                if (rel.contains("/target/") || rel.contains("/bin/")) {
+                    continue;
+                }
+                String fn = p.getFileName() == null ? "" : p.getFileName().toString();
+                if (!Files.isRegularFile(p)) {
+                    continue;
+                }
+                if (name.contains("*")) {
+                    if (matchesGlob(fn, name)) {
+                        out.add(rel);
+                    }
+                } else if (fn.equals(name)) {
+                    out.add(rel);
+                }
+            }
+        } catch (IOException ignored) {
+            // fall through
+        }
+        out.sort(String::compareTo);
+        return out;
+    }
+
+    /** True for jar names that can be executed directly (no sources/docs/shade originals). */
+    static boolean isRunnableJarName(String n) {
+        return n.endsWith(".jar")
+                && !n.endsWith("-sources.jar")
+                && !n.endsWith("-javadoc.jar")
+                && !n.endsWith("-tests.jar")
+                && !n.startsWith("original-")
+                && !n.endsWith("-shaded.jar");
+    }
+
+    static String jarMainClass(Path jar) {        try (JarFile jf = new JarFile(jar.toFile())) {
             Attributes attrs = jf.getManifest() != null ? jf.getManifest().getMainAttributes() : null;
             return attrs == null ? null : attrs.getValue(Attributes.Name.MAIN_CLASS);
         } catch (Exception e) {

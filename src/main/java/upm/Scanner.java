@@ -192,6 +192,18 @@ public final class Scanner {
         m.put("moduleCount", modules.size());
         m.put("launchCapabilities", d.proposedLaunchConfigs.stream()
                 .map(l -> l.id).toList());
+        try {
+            Map<String, Object> structure = Adapters.detectStructure(dir, d.typeId);
+            m.put("parentPom", structure.get("parentPom"));
+            m.put("parentIsRepoRoot", structure.get("parentIsRepoRoot"));
+            m.put("features", structure.get("features"));
+            m.put("products", structure.get("products"));
+            m.put("targetPlatforms", structure.get("targetPlatforms"));
+            m.put("eclipseLaunchConfigs", structure.get("eclipseLaunchConfigs"));
+            m.put("requiresJava", structure.get("requiresJava"));
+        } catch (Exception e) {
+            Main.log("WARN", "structure scan failed for " + dir + ": " + e.getMessage());
+        }
         Map<String, Object> g = GitOps.status(dir);
         m.put("git", g.get("isRepo") == Boolean.TRUE);
         if (g.get("isRepo") == Boolean.TRUE) {

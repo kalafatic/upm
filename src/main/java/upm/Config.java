@@ -33,15 +33,22 @@ public final class Config {
         public final boolean requiresDisplay;
         public final Readiness readiness;
         public final List<String> readyMarkers;
+        public final List<String> shutdownMarkers; // log lines indicating a graceful shutdown
         public final int stopGraceSeconds;
         public final long startupTimeoutMs;
         public final boolean isDefault;
 
+        /** Generic graceful-shutdown log markers applied when none are configured. */
+        public static final List<String> DEFAULT_SHUTDOWN_MARKERS = List.of(
+                "Shutting down", "Shutdown complete", "Stopping server",
+                "Server stopped", "SIGTERM received", "Received SIGTERM",
+                "Stopping gracefully", "Shutdown initiated");
+
         LaunchConfig(String id, String name, String kind, String launcher,
                 List<String> args, Map<String, String> env, String workDir, int port,
                 boolean portFixed, boolean requiresDisplay, Readiness readiness,
-                List<String> readyMarkers, int stopGraceSeconds, long startupTimeoutMs,
-                boolean isDefault) {
+                List<String> readyMarkers, List<String> shutdownMarkers,
+                int stopGraceSeconds, long startupTimeoutMs, boolean isDefault) {
             this.id = id;
             this.name = name;
             this.kind = kind;
@@ -54,9 +61,21 @@ public final class Config {
             this.requiresDisplay = requiresDisplay;
             this.readiness = readiness;
             this.readyMarkers = readyMarkers;
+            this.shutdownMarkers = shutdownMarkers == null || shutdownMarkers.isEmpty()
+                    ? DEFAULT_SHUTDOWN_MARKERS : shutdownMarkers;
             this.stopGraceSeconds = stopGraceSeconds;
             this.startupTimeoutMs = startupTimeoutMs;
             this.isDefault = isDefault;
+        }
+
+        LaunchConfig(String id, String name, String kind, String launcher,
+                List<String> args, Map<String, String> env, String workDir, int port,
+                boolean portFixed, boolean requiresDisplay, Readiness readiness,
+                List<String> readyMarkers, int stopGraceSeconds, long startupTimeoutMs,
+                boolean isDefault) {
+            this(id, name, kind, launcher, args, env, workDir, port, portFixed,
+                    requiresDisplay, readiness, readyMarkers, null, stopGraceSeconds,
+                    startupTimeoutMs, isDefault);
         }
 
         public Map<String, Object> toJson() {
@@ -75,6 +94,7 @@ public final class Config {
                 m.put("readiness", readiness.toJson());
             }
             m.put("readyMarkers", readyMarkers);
+            m.put("shutdownMarkers", shutdownMarkers);
             m.put("stopGraceSeconds", stopGraceSeconds);
             m.put("startupTimeoutSeconds", startupTimeoutMs / 1000);
             m.put("default", isDefault);
@@ -177,6 +197,16 @@ public final class Config {
         public final boolean testContinueOnFailure;
         public final List<LaunchConfig> launchConfigs;
 
+        // Discovered project structure (persisted snapshot; refresh via /refresh).
+        public final String parentPom; // repo-relative path to the authoritative parent/aggregator
+        public final List<String> modules;
+        public final List<String> features;
+        public final List<String> products;
+        public final List<String> targetPlatforms;
+        public final List<String> eclipseLaunchConfigs;
+        public final String requiresJava;
+        public final long structureAt;
+
         Project(String id, String name, String description, String repoDir, String repoUrl,
                 String type, String detectionConfidence, String detectionSource,
                 List<String> detectionEvidence, Map<String, String> git,
@@ -185,6 +215,23 @@ public final class Config {
                 List<String> warnings, Map<String, CommandBlock> operations,
                 List<TestSuite> testSuites, boolean testContinueOnFailure,
                 List<LaunchConfig> launchConfigs) {
+            this(id, name, description, repoDir, repoUrl, type, detectionConfidence,
+                    detectionSource, detectionEvidence, git, startupAfter, logLocations,
+                    configLocations, modelDirectories, apiBase, enrMonitor, warnings,
+                    operations, testSuites, testContinueOnFailure, launchConfigs,
+                    "", List.of(), List.of(), List.of(), List.of(), List.of(), "", 0L);
+        }
+
+        Project(String id, String name, String description, String repoDir, String repoUrl,
+                String type, String detectionConfidence, String detectionSource,
+                List<String> detectionEvidence, Map<String, String> git,
+                List<String> startupAfter, List<String> logLocations, List<String> configLocations,
+                List<String> modelDirectories, String apiBase, boolean enrMonitor,
+                List<String> warnings, Map<String, CommandBlock> operations,
+                List<TestSuite> testSuites, boolean testContinueOnFailure,
+                List<LaunchConfig> launchConfigs, String parentPom, List<String> modules,
+                List<String> features, List<String> products, List<String> targetPlatforms,
+                List<String> eclipseLaunchConfigs, String requiresJava, long structureAt) {
             this.id = id;
             this.name = name;
             this.description = description;
@@ -206,6 +253,14 @@ public final class Config {
             this.testSuites = testSuites;
             this.testContinueOnFailure = testContinueOnFailure;
             this.launchConfigs = launchConfigs;
+            this.parentPom = parentPom;
+            this.modules = modules;
+            this.features = features;
+            this.products = products;
+            this.targetPlatforms = targetPlatforms;
+            this.eclipseLaunchConfigs = eclipseLaunchConfigs;
+            this.requiresJava = requiresJava;
+            this.structureAt = structureAt;
         }
 
         public LaunchConfig launch(String id) {
@@ -273,6 +328,16 @@ public final class Config {
                 lcs.add(lc.toJson());
             }
             m.put("launchConfigs", lcs);
+            Map<String, Object> structure = new LinkedHashMap<>();
+            structure.put("parentPom", parentPom);
+            structure.put("modules", modules);
+            structure.put("features", features);
+            structure.put("products", products);
+            structure.put("targetPlatforms", targetPlatforms);
+            structure.put("eclipseLaunchConfigs", eclipseLaunchConfigs);
+            structure.put("requiresJava", requiresJava);
+            structure.put("structureAt", structureAt);
+            m.put("structure", structure);
             return m;
         }
 
@@ -492,10 +557,22 @@ public final class Config {
                     Json.bool(l, "requiresDisplay", false),
                     readiness,
                     Json.strList(l, "readyMarkers"),
+                    Json.strList(l, "shutdownMarkers"),
                     Json.integer(l, "stopGraceSeconds", 20),
                     Json.integer(l, "startupTimeoutSeconds", 180) * 1000L,
                     Json.bool(l, "default", lcs.isEmpty())));
         }
+        Map<String, Object> structure = Json.objField(p, "structure");
+        String parentPom = structure != null ? Json.str(structure, "parentPom", "") : "";
+        List<String> modules = structure != null ? Json.strList(structure, "modules") : List.of();
+        List<String> features = structure != null ? Json.strList(structure, "features") : List.of();
+        List<String> products = structure != null ? Json.strList(structure, "products") : List.of();
+        List<String> targetPlatforms = structure != null
+                ? Json.strList(structure, "targetPlatforms") : List.of();
+        List<String> eclipseLaunches = structure != null
+                ? Json.strList(structure, "eclipseLaunchConfigs") : List.of();
+        String requiresJava = structure != null ? Json.str(structure, "requiresJava", "") : "";
+        long structureAt = structure != null ? Json.longVal(structure, "structureAt", 0L) : 0L;
         return new Project(
                 id,
                 Json.str(p, "name", id),
@@ -517,7 +594,15 @@ public final class Config {
                 ops,
                 suites,
                 continueOnFailure,
-                lcs);
+                lcs,
+                parentPom,
+                modules,
+                features,
+                products,
+                targetPlatforms,
+                eclipseLaunches,
+                requiresJava,
+                structureAt);
     }
 
     private static List<String> expandList(List<String> in) {

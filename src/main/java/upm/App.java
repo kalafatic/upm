@@ -16,7 +16,7 @@ import java.util.Map;
 public final class App {
 
     public volatile String name = "Universal Project Manager";
-    public volatile String version = "1.0.0";
+    public volatile String version = "2.6.11";
     public volatile String host = "127.0.0.1";
     public volatile int port = 29080;
     public volatile int portFallbackRange = 100;
