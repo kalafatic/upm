@@ -18,6 +18,7 @@
     <button class="view-btn" data-view="projects">Projects</button>
     <button class="view-btn" data-view="architecture">Architecture</button>
     <button class="view-btn" data-view="monitoring">Monitoring</button>
+    <button class="view-btn" data-view="ports">Ports</button>
     <button class="view-btn" data-view="workspaces">Workspaces</button>
     <button class="view-btn" data-view="operations">Operations</button>
     <button class="view-btn" data-view="settings">Settings</button>
@@ -126,6 +127,34 @@
     <div class="panel">
       <div class="panel-title">AI / LLM monitoring</div>
       <div id="llm-view"></div>
+    </div>
+  </section>
+
+  <!-- ============================ PORTS ============================ -->
+  <section id="view-ports" class="view">
+    <div class="panel">
+      <div class="panel-title">Port Manager
+        <span class="spacer"></span>
+        <span class="muted" id="ports-last-checked"></span>
+        <button class="btn btn-sm" id="ports-refresh">Refresh</button>
+      </div>
+      <div class="ports-toolbar">
+        <div class="metric-grid ports-summary" id="ports-summary"></div>
+        <div class="ports-filters">
+          <select id="ports-filter-app" title="Filter by application">
+            <option value="">All applications</option>
+          </select>
+          <select id="ports-filter-status" title="Filter by status">
+            <option value="">All statuses</option>
+            <option value="RUNNING">RUNNING</option>
+            <option value="READY">READY</option>
+            <option value="OCCUPIED">OCCUPIED</option>
+          </select>
+          <input type="text" id="ports-search" placeholder="Search service, port, process…" style="width:220px">
+          <span class="tag" title="Reservations and legacy entries are dimmed">implemented · historical · proposed</span>
+        </div>
+      </div>
+      <div id="ports-table"></div>
     </div>
   </section>
 
