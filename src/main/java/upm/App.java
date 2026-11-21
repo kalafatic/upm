@@ -31,6 +31,8 @@ public final class App {
     public volatile boolean confirmDestructive = true;
     public volatile boolean autoSaveWorkspace = true;
     public volatile String browserCommand = "";
+    public volatile boolean webServerEnabled = true;
+    public volatile boolean webServerAutoStart = true;
     public volatile Map<String, String> detectedTools = new LinkedHashMap<>();
 
     public final Path appDir;
@@ -111,6 +113,8 @@ public final class App {
         app.confirmDestructive = Json.bool(a, "confirmDestructive", app.confirmDestructive);
         app.autoSaveWorkspace = Json.bool(a, "autoSaveWorkspace", app.autoSaveWorkspace);
         app.browserCommand = Json.str(a, "browserCommand", "");
+        app.webServerEnabled = Json.bool(a, "webServerEnabled", app.webServerEnabled);
+        app.webServerAutoStart = Json.bool(a, "webServerAutoStart", app.webServerAutoStart);
         Map<String, Object> tools = Json.objField(a, "detectedTools");
         app.detectedTools = new LinkedHashMap<>();
         if (tools != null) {
@@ -141,6 +145,8 @@ public final class App {
             a.put("confirmDestructive", confirmDestructive);
             a.put("autoSaveWorkspace", autoSaveWorkspace);
             a.put("browserCommand", browserCommand);
+            a.put("webServerEnabled", webServerEnabled);
+            a.put("webServerAutoStart", webServerAutoStart);
             a.put("detectedTools", new LinkedHashMap<>(detectedTools));
             Map<String, Object> root = new LinkedHashMap<>();
             root.put("application", a);
@@ -232,6 +238,12 @@ public final class App {
         }
         if (a.containsKey("browserCommand")) {
             app.browserCommand = Json.str(a, "browserCommand", "");
+        }
+        if (a.containsKey("webServerEnabled")) {
+            app.webServerEnabled = Json.bool(a, "webServerEnabled", app.webServerEnabled);
+        }
+        if (a.containsKey("webServerAutoStart")) {
+            app.webServerAutoStart = Json.bool(a, "webServerAutoStart", app.webServerAutoStart);
         }
     }
 }

@@ -16,6 +16,7 @@ import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executors;
@@ -47,6 +48,8 @@ public final class Server {
     private long lastNotifCount = -1;
     private long lastSysSent = 0;
     private long lastMetricsSent = 0;
+    private volatile Map<String, Object> portsInventoryCache;
+    private volatile long portsInventoryCacheTime;
     private volatile boolean running = true;
 
     private static final class SseClient {
@@ -190,6 +193,8 @@ public final class Server {
                 json(ex, 200, Adapters.detectTools());
             } else if ("/api/adapters".equals(path)) {
                 json(ex, 200, Adapters.registryJson());
+            } else if ("/api/ports/inventory".equals(path)) {
+                portsInventoryRoute(ex, method);
             } else if ("/api/ports".equals(path)) {
                 json(ex, 200, portsJson());
             } else if ("/api/report".equals(path)) {
@@ -1453,6 +1458,8 @@ public final class Server {
             m.put("confirmDestructive", app.confirmDestructive);
             m.put("autoSaveWorkspace", app.autoSaveWorkspace);
             m.put("browserCommand", app.browserCommand);
+            m.put("webServerEnabled", app.webServerEnabled);
+            m.put("webServerAutoStart", app.webServerAutoStart);
             m.put("tools", Adapters.detectTools());
             m.put("appDir", app.appDir.toString());
             json(ex, 200, m);
@@ -1890,6 +1897,8 @@ public final class Server {
         m.put("language", app.language);
         m.put("defaultWorkspace", app.defaultWorkspace);
         m.put("openBrowser", app.openBrowser);
+        m.put("webServerEnabled", app.webServerEnabled);
+        m.put("webServerAutoStart", app.webServerAutoStart);
         return m;
     }
 
@@ -1980,6 +1989,8 @@ public final class Server {
         }
         m.put("operations", ops);
         List<Map<String, Object>> lcs = new ArrayList<>();
+        // Listener-based availability (no TCP connections to live services).
+        Set<Integer> listening = Ports.listeningPorts();
         for (Config.LaunchConfig lc : p.launchConfigs) {
             Map<String, Object> lm = lc.toJson();
             Path launcher = Path.of(App.expandHome(lc.launcher));
@@ -1988,6 +1999,10 @@ public final class Server {
             }
             lm.put("launcherExists", Files.isExecutable(launcher));
             lm.put("displayAvailable", System.getenv("DISPLAY") != null);
+            int resolved = Probe.resolvePort(p, lc, lc.port);
+            if (resolved > 0) {
+                lm.put("_open", listening.contains(resolved));
+            }
             lcs.add(lm);
         }
         m.put("launchConfigs", lcs);
@@ -2087,6 +2102,101 @@ public final class Server {
         m.put("log", Proc.tailLog(proc.runtimeLog(p.id, lcId), 400_000));
         m.put("crashed", Files.exists(proc.crashMarker(p.id, lcId)));
         return m;
+    }
+
+    /**
+     * Port Manager inventory endpoint. Query parameters:
+     * <ul>
+     *   <li>{@code refresh=1} — bypass the cache and re-scan listeners.</li>
+     *   <li>{@code port=NNNN} — force a fresh check and return only that entry.</li>
+     *   <li>{@code app=EVO} — return only entries of one application.</li>
+     * </ul>
+     * The scan is read-only: it never terminates processes or reassigns ports.
+     */
+    private void portsInventoryRoute(HttpExchange ex, String method) throws IOException {
+        if (!"GET".equals(method)) {
+            json(ex, 405, err("GET required"));
+            return;
+        }
+        String query = ex.getRequestURI().getQuery();
+        boolean refresh = false;
+        int onlyPort = 0;
+        String appFilter = "";
+        if (query != null) {
+            for (String kv : query.split("&")) {
+                if (kv.startsWith("refresh=")) {
+                    String v = kv.substring("refresh=".length());
+                    refresh = "1".equals(v) || "true".equals(v);
+                } else if (kv.startsWith("port=")) {
+                    try {
+                        onlyPort = Integer.parseInt(kv.substring("port=".length()));
+                    } catch (NumberFormatException ignored) {
+                        onlyPort = 0;
+                    }
+                } else if (kv.startsWith("app=")) {
+                    String raw = kv.substring("app=".length());
+                    try {
+                        appFilter = java.net.URLDecoder.decode(raw, StandardCharsets.UTF_8);
+                    } catch (IllegalArgumentException e) {
+                        appFilter = raw;
+                    }
+                }
+            }
+        }
+        long now = System.currentTimeMillis();
+        if (!refresh && onlyPort <= 0 && portsInventoryCache != null
+                && now - portsInventoryCacheTime < 10_000) {
+            json(ex, 200, applyPortFilter(portsInventoryCache, appFilter));
+            return;
+        }
+        Map<String, Object> m = Ports.checkAll();
+        m.put("controlCenter", Ports.controlCenter(Main.currentPort, app.host));
+        if (onlyPort <= 0 && appFilter.isBlank()) {
+            portsInventoryCache = m;
+            portsInventoryCacheTime = now;
+        }
+        if (onlyPort > 0) {
+            @SuppressWarnings("unchecked")
+            List<Map<String, Object>> entries = (List<Map<String, Object>>) m.get("entries");
+            List<Map<String, Object>> single = new ArrayList<>();
+            for (Map<String, Object> e : entries) {
+                if (Json.integer(e, "port", -1) == onlyPort) {
+                    single.add(e);
+                }
+            }
+            m.put("entries", single);
+            recomputePortSummary(m);
+        }
+        json(ex, 200, applyPortFilter(m, appFilter));
+    }
+
+    private static Map<String, Object> applyPortFilter(Map<String, Object> m, String appFilter) {
+        if (appFilter == null || appFilter.isBlank()) {
+            return m;
+        }
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> entries = (List<Map<String, Object>>) m.get("entries");
+        List<Map<String, Object>> filtered = new ArrayList<>();
+        for (Map<String, Object> e : entries) {
+            if (appFilter.equals(e.get("app"))) {
+                filtered.add(e);
+            }
+        }
+        Map<String, Object> copy = new LinkedHashMap<>(m);
+        copy.put("entries", filtered);
+        recomputePortSummary(copy);
+        return copy;
+    }
+
+    private static void recomputePortSummary(Map<String, Object> m) {
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> entries = (List<Map<String, Object>>) m.get("entries");
+        Map<String, Object> summary = new LinkedHashMap<>();
+        for (String s : List.of("RUNNING", "READY", "OCCUPIED")) {
+            long c = entries.stream().filter(e -> s.equals(e.get("status"))).count();
+            summary.put(s.toLowerCase(), c);
+        }
+        m.put("summary", summary);
     }
 
     private Map<String, Object> portsJson() {

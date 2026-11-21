@@ -165,6 +165,7 @@ function renderIfVisible() {
     case "projects": renderProjects(); break;
     case "architecture": renderArchitecture(); break;
     case "monitoring": renderMonitoring(); break;
+    case "ports": renderPorts(); break;
     case "workspaces": renderWorkspaces(); break;
     case "operations": renderOperations(); break;
     case "settings": renderSettings(); break;
@@ -2257,8 +2258,18 @@ function renderSettings() {
     const browser = el("input"); browser.type = "checkbox"; browser.checked = state.app.openBrowser !== false;
     const openBrowser = el("div", "field checkbox");
     openBrowser.append(browser, el("span", "", "Open the browser on startup"));
+    const wsEnabled = el("input"); wsEnabled.type = "checkbox";
+    wsEnabled.checked = state.app.webServerEnabled !== false;
+    const wsEnabledBox = el("div", "field checkbox");
+    wsEnabledBox.append(wsEnabled, el("span", "", "Web server enabled (applies after restart)"));
+    const wsAutoStart = el("input"); wsAutoStart.type = "checkbox";
+    wsAutoStart.checked = state.app.webServerAutoStart !== false;
+    const wsAutoStartBox = el("div", "field checkbox");
+    wsAutoStartBox.append(wsAutoStart, el("span", "", "Start the web server automatically at startup (applies after restart)"));
     f("HTTP port (applies after restart)", port);
     body.appendChild(openBrowser);
+    body.appendChild(wsEnabledBox);
+    body.appendChild(wsAutoStartBox);
   } else if (selectedSettingsTab === "tools") {
     const bodyHolder = body;
     api("/api/tools").catch(() => ({}))
@@ -2301,6 +2312,8 @@ async function saveSettings() {
   } else if (tab === "runtime") {
     body.port = Number(inputs[0].value) || 29080;
     body.openBrowser = inputs[1].checked;
+    body.webServerEnabled = inputs[2].checked;
+    body.webServerAutoStart = inputs[3].checked;
   } else if (tab === "monitoring") {
     body.monitorRefreshMs = Number(inputs[0].value) || 3000;
     body.historyRetention = Number(inputs[1].value) || 200;
@@ -2547,6 +2560,7 @@ $("#btn-backup-workspace").onclick = () => backupWorkspace(state.workspace.id);
 $("#btn-new-profile").onclick = () => openNewProfile();
 $("#btn-discover").onclick = () => openDiscover();
 $("#btn-save-settings").onclick = () => saveSettings();
+initPortsControls();
 $("#modal-backdrop").addEventListener("click", (e) => {
   if (e.target.id === "modal-backdrop") closeModal();
 });
@@ -2948,6 +2962,185 @@ async function renderLlmView() {
   }
 }
 
+// ================================================================ PORTS
+
+let portsData = null;
+let portsRefreshing = false;
+let portsSort = { key: "port", dir: 1 };
+let portsFilterApp = "";
+let portsFilterStatus = "";
+let portsSearch = "";
+
+function portBadge(status) {
+  return '<span class="badge pm-' + esc(status.toLowerCase()) + '">' + esc(status) + "</span>";
+}
+
+async function refreshPorts(force) {
+  if (portsRefreshing) return;
+  portsRefreshing = true;
+  try {
+    const m = await api("/api/ports/inventory" + (force ? "?refresh=1" : ""));
+    portsData = m;
+    if (activeView === "ports") renderPorts();
+  } catch (e) {
+    if (activeView === "ports") {
+      $("#ports-table").innerHTML = '<div class="err-text">' + esc(e.message) + "</div>";
+    }
+  } finally {
+    portsRefreshing = false;
+  }
+}
+
+async function recheckPort(port) {
+  try {
+    const m = await api("/api/ports/inventory?port=" + port);
+    const entry = (m.entries || [])[0];
+    if (entry && portsData) {
+      const list = portsData.entries || [];
+      const idx = list.findIndex((x) => x.port === port);
+      if (idx >= 0) list[idx] = entry;
+      else list.push(entry);
+      const s = { running: 0, ready: 0, occupied: 0 };
+      for (const x of list) s[x.status.toLowerCase()] = (s[x.status.toLowerCase()] || 0) + 1;
+      portsData.summary = s;
+      portsData.timeMs = m.timeMs;
+      renderPorts();
+    }
+  } catch (e) {
+    toast("error", "Port check failed", e.message);
+  }
+}
+
+function renderPorts() {
+  if (!portsData) {
+    $("#ports-table").innerHTML = '<div class="empty">Loading port inventory…</div>';
+    refreshPorts(false);
+    return;
+  }
+  const s = portsData.summary || {};
+  const cc = portsData.controlCenter || {};
+  const cards = $("#ports-summary");
+  cards.innerHTML =
+    '<div class="panel metric-card"><div class="m-title">Running</div>' +
+    '<div class="m-value pm-running-text">' + (s.running || 0) + "</div>" +
+    '<div class="m-sub">expected services listening</div></div>' +
+    '<div class="panel metric-card"><div class="m-title">Ready</div>' +
+    '<div class="m-value pm-ready-text">' + (s.ready || 0) + "</div>" +
+    '<div class="m-sub">ports free for their services</div></div>' +
+    '<div class="panel metric-card"><div class="m-title">Occupied</div>' +
+    '<div class="m-value pm-occupied-text">' + (s.occupied || 0) + "</div>" +
+    '<div class="m-sub">unexpected processes on the port</div></div>' +
+    '<div class="panel metric-card"><div class="m-title">UPM control center</div>' +
+    '<div class="m-value" style="font-size:15px">' + esc(cc.host || "127.0.0.1") + ":" + (cc.port || 0) + "</div>" +
+    '<div class="m-sub">pid ' + (cc.pid || "—") + "</div></div>";
+  $("#ports-last-checked").textContent = "last checked " + fmtTime(portsData.timeMs);
+  renderPortsTable();
+}
+
+function renderPortsTable() {
+  const box = $("#ports-table");
+  box.innerHTML = "";
+  const all = (portsData.entries || []).slice();
+  const apps = [...new Set(all.map((x) => x.app))];
+  const sel = $("#ports-filter-app");
+  if (sel.options.length <= 1) {
+    for (const a of apps) {
+      const o = document.createElement("option");
+      o.value = a;
+      o.textContent = a;
+      sel.appendChild(o);
+    }
+  }
+  const filtered = all.filter((x) =>
+    (!portsFilterApp || x.app === portsFilterApp) &&
+    (!portsFilterStatus || x.status === portsFilterStatus) &&
+    (!portsSearch || (x.service + " " + x.port + " " + (x.process || "") + " " + x.description)
+      .toLowerCase().includes(portsSearch.toLowerCase())));
+  const sorted = filtered.slice().sort((a, b) => {
+    const k = portsSort.key;
+    let va = a[k];
+    let vb = b[k];
+    if (k === "port") { va = Number(va) || 0; vb = Number(vb) || 0; }
+    if (typeof va === "string") { va = va.toLowerCase(); vb = String(vb).toLowerCase(); }
+    return va < vb ? -portsSort.dir : va > vb ? portsSort.dir : 0;
+  });
+  const t = el("table", "tbl");
+  const th = (label, key, title) =>
+    '<th class="sortable" data-port-sort="' + key + '"' +
+    (title ? ' title="' + esc(title) + '"' : "") + ">" + esc(label) +
+    (portsSort.key === key ? (portsSort.dir > 0 ? " ▲" : " ▼") : "") + "</th>";
+  t.innerHTML = "<thead><tr>" +
+    "<th>Application</th>" + th("Port", "port", "Click to sort by port") +
+    "<th>Service</th>" +
+    "<th>Purpose / Description</th>" + th("Protocol", "protocol") +
+    th("Status", "status", "Click to sort by status") +
+    "<th>Process</th><th>PID</th><th>Binding</th>" +
+    th("Last checked", "lastChecked", "Click to sort by last check time") +
+    "<th></th></tr></thead>";
+  const tb = document.createElement("tbody");
+  let lastApp = "";
+  for (const e of sorted) {
+    if (e.app !== lastApp) {
+      lastApp = e.app;
+      const grp = el("tr", "pm-group");
+      const cnt = {};
+      for (const x of all.filter((y) => y.app === e.app)) {
+        cnt[x.status] = (cnt[x.status] || 0) + 1;
+      }
+      grp.innerHTML = '<td colspan="11"><b>' + esc(e.app) + "</b>" +
+        ' <span class="muted">' + (cnt.RUNNING ? cnt.RUNNING + " running · " : "") +
+        (cnt.READY ? cnt.READY + " ready · " : "") +
+        (cnt.OCCUPIED ? cnt.OCCUPIED + " occupied" : "") + "</span></td>";
+      tb.appendChild(grp);
+    }
+    const tr = el("tr", e.kind !== "implemented" ? "pm-dim" : "");
+    const kindTag = e.kind === "implemented"
+      ? "" : ' <span class="tag pm-kind-' + esc(e.kind) + '">' + esc(e.kind) + "</span>";
+    const title = esc(e.description) +
+      (e.detail ? "\n\nLast check: " + esc(e.detail) : "");
+    tr.innerHTML =
+      "<td>" + esc(e.app) + "</td>" +
+      '<td class="mono" title="Assigned ' + esc(e.app) + ' port — ' + esc(e.service) + '">' + e.port + "</td>" +
+      '<td title="' + esc(e.description) + '">' + esc(e.service) + kindTag + "</td>" +
+      '<td class="pm-purpose" title="' + esc(e.description) + '">' + esc(e.description) + "</td>" +
+      "<td class='mono'>" + esc(e.protocol) + "</td>" +
+      '<td title="' + esc(e.detail || "") + '">' + portBadge(e.status) + "</td>" +
+      '<td class="mono pm-proc" title="' + esc(e.process || "") + '">' +
+      (e.process ? esc(e.process) : '<span class="muted">—</span>') + "</td>" +
+      '<td class="mono">' + (e.pid ? e.pid : '<span class="muted">—</span>') + "</td>" +
+      '<td class="mono" title="' + (e.status === "READY"
+        ? "Configured binding address (port free)" : "Listening address of the socket") + '">' +
+      esc(e.binding || "—") + "</td>" +
+      '<td class="mono" title="' + esc(e.detail || "") + '">' + fmtTime(e.lastChecked) + "</td>" +
+      '<td><button class="btn btn-sm" data-port-refresh="' + e.port + '" title="Re-check port ' + e.port + ' now">↻</button></td>';
+    tb.appendChild(tr);
+  }
+  t.appendChild(tb);
+  box.appendChild(t);
+  if (!sorted.length) {
+    box.appendChild(el("div", "empty", "No ports match the current filter."));
+  }
+}
+
+function initPortsControls() {
+  $("#ports-refresh").onclick = () => refreshPorts(true);
+  $("#ports-filter-app").onchange = (e) => { portsFilterApp = e.target.value; renderPortsTable(); };
+  $("#ports-filter-status").onchange = (e) => { portsFilterStatus = e.target.value; renderPortsTable(); };
+  $("#ports-search").addEventListener("input", (e) => { portsSearch = e.target.value; renderPortsTable(); });
+  $("#ports-table").addEventListener("click", (e) => {
+    const h = e.target.closest("[data-port-sort]");
+    if (h) {
+      const k = h.dataset.portSort;
+      if (portsSort.key === k) portsSort.dir = -portsSort.dir;
+      else portsSort = { key: k, dir: 1 };
+      renderPortsTable();
+      return;
+    }
+    const pr = e.target.closest("[data-port-refresh]");
+    if (pr) recheckPort(Number(pr.dataset.portRefresh));
+  });
+}
+
 // ================================================================ DISCOVERY
 
 async function openDiscover() {
@@ -3189,3 +3382,10 @@ setInterval(() => {
     onMetricsSample(Object.assign(m, { timeMs: Date.now() }));
   }).catch(() => {});
 }, 2000);
+
+// automatic periodic refresh of the Port Manager inventory (server caches
+// for 10 s, so this re-scans actual listeners roughly every 15 s)
+setInterval(() => {
+  if (activeView !== "ports" || document.hidden) return;
+  refreshPorts(false);
+}, 15000);

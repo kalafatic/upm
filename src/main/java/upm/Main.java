@@ -39,7 +39,7 @@ public final class Main {
 
         // Single-instance detection: if another UPM instance already answers
         // on one of the configured ports, reuse it instead of starting a new one.
-        String existing = findExisting(app);
+        String existing = app.webServerEnabled ? findExisting(app) : null;
         if (existing != null) {
             log("INFO", "Universal Project Manager already running at " + existing);
             if (app.openBrowser) {
@@ -79,13 +79,20 @@ public final class Main {
 
         reconcile(state, proc);
 
-        Server server = new Server(app, state, ops, proc, diag, enr, dash, metrics, store);
-        server.start();
-
-        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-            log("INFO", "Universal Project Manager shutting down");
-            server.stop();
-        }));
+        if (app.webServerEnabled && app.webServerAutoStart) {
+            Server server = new Server(app, state, ops, proc, diag, enr, dash, metrics, store);
+            server.start();
+            Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+                log("INFO", "Universal Project Manager shutting down");
+                server.stop();
+            }));
+        } else if (!app.webServerEnabled) {
+            log("INFO", "Web server disabled by configuration (webServer.enabled=false). "
+                    + "Backend services run without a web interface.");
+        } else {
+            log("INFO", "Web server auto-start disabled (webServer.autoStart=false). "
+                    + "Backend services run; the web server is not started.");
+        }
 
         Thread watchdog = new Thread(() -> {
             while (true) {
@@ -109,8 +116,18 @@ public final class Main {
         watchdog.setDaemon(true);
         watchdog.start();
 
-        if (app.openBrowser) {
-            openBrowser("http://" + app.host + ":" + currentPort + "/", app);
+        if (app.webServerEnabled && app.webServerAutoStart) {
+            if (app.openBrowser) {
+                openBrowser("http://" + app.host + ":" + currentPort + "/", app);
+            }
+        } else {
+            // Keep the backend alive without the web server (headless mode):
+            // the watchdog above is a daemon thread, so block the main thread.
+            try {
+                Thread.currentThread().join();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
         }
     }
 
