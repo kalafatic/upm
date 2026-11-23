@@ -18,3 +18,4 @@ workspaces/*/projects/
 # Misc
 *.log
 *.class
+/target/

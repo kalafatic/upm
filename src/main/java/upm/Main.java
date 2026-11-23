@@ -39,14 +39,14 @@ public final class Main {
 
         // Single-instance detection: if another UPM instance already answers
         // on one of the configured ports, reuse it instead of starting a new one.
-        String existing = app.webServerEnabled ? findExisting(app) : null;
-        if (existing != null) {
-            log("INFO", "Universal Project Manager already running at " + existing);
-            if (app.openBrowser) {
-                openBrowser(existing, app);
-            }
-            return;
-        }
+//        String existing = app.webServerEnabled ? findExisting(app) : null;
+//        if (existing != null) {
+//            log("INFO", "Universal Project Manager already running at " + existing);
+//            if (app.openBrowser) {
+//                openBrowser(existing, app);
+//            }
+//            return;
+//        }
 
         Proc.selfPgid = readOwnPgid();
         Files.createDirectories(app.runtimeDir);
