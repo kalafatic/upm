@@ -238,7 +238,7 @@ public final class Proc {
 
         long pid = proc.pid();
         // Poll the process group until setsid() took effect; never record the
-        // control center's own group.
+        // UPM process's own group.
         long pgid = -1;
         for (int i = 0; i < 25; i++) {
             long g = readPgid(pid);
@@ -459,7 +459,7 @@ public final class Proc {
         }
         if (selfPgid > 0 && pgid == selfPgid) {
             Main.log("ERROR", "Refusing to signal process group " + pgid
-                    + ": it is the control center's own group.");
+                    + ": it is UPM's own group.");
             return;
         }
         try {

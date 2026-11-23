@@ -242,7 +242,7 @@ public final class Ports {
         m.put("host", host);
         m.put("port", port);
         m.put("pid", Main.selfPid);
-        m.put("process", "java -jar universal-project-manager.jar");
+        m.put("process", "upm.Main (UPM control center)");
         m.put("status", port > 0 ? "RUNNING" : "READY");
         m.put("timeMs", System.currentTimeMillis());
         return m;

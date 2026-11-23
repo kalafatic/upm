@@ -172,7 +172,7 @@ public final class WsStore {
             Map<String, Object> info = new LinkedHashMap<>();
             info.put("exportedAt", System.currentTimeMillis());
             info.put("sourceWorkspace", id);
-            info.put("format", "universal-project-manager/1");
+            info.put("format", "upm/1");
             zip.write(Json.write(info).getBytes(java.nio.charset.StandardCharsets.UTF_8));
             zip.closeEntry();
         }
@@ -194,7 +194,7 @@ public final class WsStore {
         Map<String, byte[]> entries = readZip(zipBytes);
         byte[] wf = entries.get("workspace.jsonc");
         if (wf == null) {
-            out.put("error", "Not a valid Universal Project Manager export (workspace.jsonc missing).");
+            out.put("error", "Not a valid UPM workspace export (workspace.jsonc missing).");
             return out;
         }
         try {

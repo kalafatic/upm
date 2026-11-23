@@ -1,4 +1,4 @@
-/* Universal Project Manager — lightweight SVG time-series chart engine.
+/* UPM — lightweight SVG time-series chart engine.
    Live mode, pause, time ranges, hover details, legend, CSV/SVG export. */
 "use strict";
 

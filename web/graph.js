@@ -1,4 +1,4 @@
-/* Universal Project Manager — lightweight SVG graph engine.
+/* UPM — lightweight SVG graph engine.
    Separates graph data/model from rendering and interaction; reused by all
    architecture perspectives. Zoom, pan, drag, select, multi-select, search,
    filter, details, layout persistence, export (SVG/PNG/JSON/CSV), print. */

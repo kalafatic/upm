@@ -19,7 +19,9 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 /**
  * HTTP API + SSE + static web UI. The single gateway used by the CLI, the
@@ -52,6 +54,24 @@ public final class Server {
     private volatile long portsInventoryCacheTime;
     private volatile boolean running = true;
 
+    /**
+     * Control-center HTTP server lifecycle. The server only reports READY once
+     * it is actually bound and answers a real HTTP health check; RUNNING is
+     * never reported merely because a startup method returned.
+     */
+    public enum Lifecycle { DISABLED, STOPPED, STARTING, RUNNING, READY, STOPPING, FAILED }
+
+    private volatile Lifecycle lifecycle = Lifecycle.STOPPED;
+    private volatile ExecutorService executor;
+    private volatile Thread broadcastThread;
+    private volatile int configuredPort = 0;   // port from configuration
+    private volatile int allocatedPort = 0;    // port selected by the allocation policy
+    private volatile int boundPort = 0;        // actually bound port (authoritative)
+    private volatile String portCause = "";    // why a fallback was used, if any
+    private volatile long startedAtMs = 0;
+    private volatile long readyAtMs = 0;
+    private volatile String lastError = "";
+
     private static final class SseClient {
         final OutputStream out;
 
@@ -74,44 +94,85 @@ public final class Server {
         this.scanner = new Scanner(store, Main.currentConfig.workspaceId);
     }
 
-    public void start() throws IOException {
-        int port = app.port;
-        IOException last = null;
-        boolean bound = false;
-        for (int i = 0; i <= app.portFallbackRange; i++) {
-            int candidate = app.port + i;
-            try {
-                http = HttpServer.create(new InetSocketAddress(app.host, candidate), 128);
-                port = candidate;
-                bound = true;
-                break;
-            } catch (IOException e) {
-                last = e;
-            }
+    /** Starts the control-center HTTP server (idempotent). */
+    public synchronized void start() throws IOException {
+        if (!app.webServerEnabled) {
+            lifecycle = Lifecycle.DISABLED;
+            Main.log("INFO", "[UPM][HTTP][DISABLED] webServer.enabled=false");
+            return;
         }
-        if (!bound) {
-            throw new IOException("No free control-center port in range " + app.port
-                    + ".." + (app.port + app.portFallbackRange), last);
+        if (lifecycle == Lifecycle.READY || lifecycle == Lifecycle.RUNNING
+                || lifecycle == Lifecycle.STARTING) {
+            Main.log("INFO", "[UPM][HTTP][SKIP] already " + lifecycle + " port=" + boundPort);
+            return;
         }
-        Main.currentPort = port;
+        lifecycle = Lifecycle.STARTING;
+        startedAtMs = System.currentTimeMillis();
+        configuredPort = app.port;
+        Main.log("INFO", "[UPM][HTTP][STARTING] host=" + app.host + " port=" + app.port);
+
+        PortSelection sel;
+        try {
+            sel = bindAuthoritative();
+        } catch (IOException e) {
+            lifecycle = Lifecycle.FAILED;
+            lastError = e.getMessage();
+            Main.log("ERROR", "[UPM][HTTP][FAILED] reason=" + e.getMessage());
+            throw e;
+        }
+        allocatedPort = sel.port;
+        boundPort = sel.port;
+        portCause = sel.cause;
+        Main.currentPort = boundPort;
+
         http.createContext("/api", this::api);
         http.createContext("/", this::staticOrIndex);
-        http.setExecutor(Executors.newCachedThreadPool(r -> {
+        executor = Executors.newCachedThreadPool(r -> {
             Thread t = new Thread(r, "upm-http");
             t.setDaemon(true);
             return t;
-        }));
+        });
+        http.setExecutor(executor);
         http.start();
+        if (sel.fallback) {
+            Main.log("WARN", "[UPM][HTTP][RUNNING] configured port " + configuredPort
+                    + " unavailable (" + portCause + "); bound port=" + boundPort
+                    + " (fallback +" + (boundPort - configuredPort) + ")");
+        } else {
+            Main.log("INFO", "[UPM][HTTP][RUNNING] bound host=" + app.host
+                    + " port=" + boundPort);
+        }
+
+        if (verifyReady()) {
+            lifecycle = Lifecycle.READY;
+            readyAtMs = System.currentTimeMillis();
+            Main.log("INFO", "[UPM][HTTP][READY] address=" + app.host + " port=" + boundPort
+                    + " startupMs=" + (readyAtMs - startedAtMs));
+        } else {
+            lifecycle = Lifecycle.RUNNING;
+            Main.log("WARN", "[UPM][HTTP][RUNNING] bound but readiness check failed on port="
+                    + boundPort);
+        }
+        persistServerState();
+
         Thread b = new Thread(this::broadcastLoop, "upm-sse-broadcast");
         b.setDaemon(true);
+        broadcastThread = b;
         b.start();
-        Main.log("INFO", "Universal Project Manager listening on http://" + app.host + ":" + port + "/");
     }
 
-    public void stop() {
+    /** Stops the control-center HTTP server (idempotent). */
+    public synchronized void stop() {
+        if (lifecycle == Lifecycle.STOPPED || lifecycle == Lifecycle.DISABLED) {
+            return;
+        }
+        Main.log("INFO", "[UPM][HTTP][STOPPING] port=" + boundPort);
+        lifecycle = Lifecycle.STOPPING;
         running = false;
         if (http != null) {
-            http.stop(1);
+            // Close the listening socket and stop accepting new requests.
+            http.stop(0);
+            http = null;
         }
         for (SseClient c : sseClients) {
             try {
@@ -120,6 +181,177 @@ public final class Server {
                 // closing
             }
         }
+        sseClients.clear();
+        Thread bt = broadcastThread;
+        broadcastThread = null;
+        if (bt != null && bt != Thread.currentThread()) {
+            bt.interrupt();
+            try {
+                bt.join(2000);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }
+        if (executor != null) {
+            executor.shutdown();
+            try {
+                if (!executor.awaitTermination(5, TimeUnit.SECONDS)) {
+                    executor.shutdownNow();
+                    executor.awaitTermination(2, TimeUnit.SECONDS);
+                }
+            } catch (InterruptedException e) {
+                executor.shutdownNow();
+                Thread.currentThread().interrupt();
+            }
+            executor = null;
+        }
+        Main.currentPort = 0;
+        lifecycle = Lifecycle.STOPPED;
+        clearServerState();
+        Main.log("INFO", "[UPM][HTTP][STOPPED] port=" + boundPort);
+    }
+
+    /** Graceful shutdown: stop the server, flush state, then exit the JVM. */
+    public void shutdownGracefully() {
+        stop();
+        if (state != null) {
+            state.persistNow();
+        }
+        System.exit(0);
+    }
+
+    public Lifecycle lifecycle() {
+        return lifecycle;
+    }
+
+    public int boundPort() {
+        return boundPort;
+    }
+
+    // ------------------------------------------------------ port allocation
+
+    /** Result of the authoritative control-center port allocation. */
+    private static final class PortSelection {
+        final int port;
+        final boolean fallback;
+        final String cause;
+
+        PortSelection(int port, boolean fallback, String cause) {
+            this.port = port;
+            this.fallback = fallback;
+            this.cause = cause;
+        }
+    }
+
+    /**
+     * Authoritative control-center port allocation. Binds the configured port;
+     * on conflict, classifies the cause (managed UPM instance vs external
+     * process) and follows the configured fallback range. The actual socket
+     * bind is the source of truth — a preliminary availability check is never
+     * trusted on its own.
+     */
+    private PortSelection bindAuthoritative() throws IOException {
+        IOException last = null;
+        for (int i = 0; i <= app.portFallbackRange; i++) {
+            int candidate = app.port + i;
+            try {
+                http = HttpServer.create(new InetSocketAddress(app.host, candidate), 128);
+                return new PortSelection(candidate, i > 0,
+                        i > 0 ? classifyOccupiedPort(app.port) : "");
+            } catch (IOException e) {
+                last = e;
+            }
+        }
+        String cause = classifyOccupiedPort(app.port);
+        throw new IOException("No free UPM port in range " + app.port + ".."
+                + (app.port + app.portFallbackRange)
+                + (cause.isEmpty() ? "" : "; configured port: " + cause), last);
+    }
+
+    /**
+     * Classifies why a port is occupied: another UPM instance (managed) or an
+     * unrelated process (external). Returns a human-readable cause.
+     */
+    private String classifyOccupiedPort(int port) {
+        if (isUpmInstanceAt(port)) {
+            return "occupied by another UPM instance";
+        }
+        String owner = Probe.ownerOf(port);
+        if (owner != null && !owner.isBlank()) {
+            return "occupied by external process (" + owner + ")";
+        }
+        return "occupied by an unknown process";
+    }
+
+    /** True if an HTTP endpoint on the given port answers as a UPM instance. */
+    private boolean isUpmInstanceAt(int port) {
+        String body = Probe.httpGet("http://" + app.host + ":" + port + "/api/health", 700);
+        if (body == null) {
+            return false;
+        }
+        return body.contains("\"app\":\"upm\"")
+                || body.contains("\"app\":\"universal-project-manager\"");
+    }
+
+    /** Real self health-check: the server is READY only when it answers HTTP 200. */
+    private boolean verifyReady() {
+        String body = Probe.httpGet("http://" + app.host + ":" + boundPort + "/api/health", 2500);
+        return body != null && body.contains("\"status\":\"ok\"");
+    }
+
+    // --------------------------------------------------- runtime persistence
+
+    private Path serverStateFile() {
+        return app.runtimeDir.resolve("upm").resolve("server.json");
+    }
+
+    private void persistServerState() {
+        try {
+            Files.createDirectories(serverStateFile().getParent());
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("pid", Main.selfPid);
+            m.put("host", app.host);
+            m.put("configuredPort", configuredPort);
+            m.put("allocatedPort", allocatedPort);
+            m.put("boundPort", boundPort);
+            m.put("state", lifecycle.name());
+            m.put("startedAtMs", startedAtMs);
+            m.put("readyAtMs", readyAtMs);
+            m.put("cause", portCause);
+            m.put("version", app.version);
+            Files.writeString(serverStateFile(), Json.write(m));
+        } catch (IOException e) {
+            Main.log("WARN", "[UPM][HTTP] could not persist server state: " + e.getMessage());
+        }
+    }
+
+    private void clearServerState() {
+        try {
+            Files.deleteIfExists(serverStateFile());
+        } catch (IOException ignored) {
+            // best effort
+        }
+    }
+
+    /** Full server lifecycle status (used by /api/server and diagnostics). */
+    private Map<String, Object> serverStatusJson() {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("state", lifecycle.name());
+        m.put("pid", Main.selfPid);
+        m.put("host", app.host);
+        m.put("configuredPort", configuredPort);
+        m.put("allocatedPort", allocatedPort);
+        m.put("boundPort", boundPort);
+        m.put("port", Main.currentPort);
+        m.put("cause", portCause);
+        m.put("startedAtMs", startedAtMs);
+        m.put("readyAtMs", readyAtMs);
+        m.put("startupMs", readyAtMs > 0 ? readyAtMs - startedAtMs : 0);
+        m.put("version", app.version);
+        m.put("webServerEnabled", app.webServerEnabled);
+        m.put("webServerAutoStart", app.webServerAutoStart);
+        m.put("lastError", lastError);
+        return m;
     }
 
     // ------------------------------------------------------------- routing
@@ -131,11 +363,15 @@ public final class Server {
             if ("/api/health".equals(path)) {
                 Map<String, Object> m = new LinkedHashMap<>();
                 m.put("status", "ok");
-                m.put("app", "universal-project-manager");
+                m.put("app", "upm");
                 m.put("name", app.name);
                 m.put("version", app.version);
+                m.put("state", lifecycle.name());
+                m.put("configuredPort", configuredPort);
                 m.put("port", Main.currentPort);
                 json(ex, 200, m);
+            } else if ("/api/server".equals(path)) {
+                json(ex, 200, serverStatusJson());
             } else if ("/api/events".equals(path)) {
                 sse(ex);
             } else if ("/api/state".equals(path)) {
@@ -205,11 +441,11 @@ public final class Server {
                 json(ex, 200, m);
                 Thread t = new Thread(() -> {
                     try {
-                        Thread.sleep(400);
+                        Thread.sleep(200);
                     } catch (InterruptedException ignored) {
                         // go
                     }
-                    System.exit(0);
+                    shutdownGracefully();
                 }, "upm-shutdown");
                 t.setDaemon(true);
                 t.start();
@@ -2394,6 +2630,10 @@ public final class Server {
         byte[] bytes = Main.webResource(path);
         if (bytes == null) {
             bytes = Main.webResource("/index.html");
+        }
+        if (bytes == null) {
+            json(ex, 404, err("Resource not found: " + path));
+            return;
         }
         ex.getResponseHeaders().set("Content-Type", contentType(path));
         ex.getResponseHeaders().set("Cache-Control", "no-cache");

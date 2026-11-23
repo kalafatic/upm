@@ -1,9 +1,9 @@
 [Desktop Entry]
 Version=1.0
 Type=Application
-Name=Universal Project Manager
+Name=UPM
 Comment=Manage software projects: add, build, test, launch, monitor and stop — from one simple dashboard
-Exec=/home/petr/git/UniversalProjectManager/launch.sh
+Exec=@APP_DIR@/launch.sh
 Icon=utilities-system-monitor
 Terminal=false
 Categories=Development;IDE;

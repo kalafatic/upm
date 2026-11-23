@@ -15,7 +15,7 @@ import java.util.Map;
  */
 public final class App {
 
-    public volatile String name = "Universal Project Manager";
+    public volatile String name = "UPM";
     public volatile String version = "2.6.11";
     public volatile String host = "127.0.0.1";
     public volatile int port = 29080;
@@ -56,21 +56,50 @@ public final class App {
         this.opsDir = appDir.resolve("state/operations");
     }
 
-    /** Locates the application directory: dir of the jar or the current dir. */
+    /** Locates the application directory: the process working directory when it
+     *  is a real UPM project root, otherwise the code source (jar or classes). */
     public static Path locateAppDir() {
+        // Prefer the working directory when it is the project root. This makes
+        // Eclipse Run/Debug launches (classpath = target/classes) and packaged
+        // launches resolve the same configuration paths, independent of the
+        // accidental working directory.
+        Path userDir = Path.of(System.getProperty("user.dir"));
+        if (looksLikeAppRoot(userDir)) {
+            return userDir.toAbsolutePath();
+        }
+        // Fall back to the code source: the jar's directory (packaged,
+        // relocatable) or, for a classes directory, the project root above it.
         try {
             Path code = Path.of(App.class.getProtectionDomain().getCodeSource()
-                    .getLocation().toURI());
+                    .getLocation().toURI()).toAbsolutePath();
             if (Files.isRegularFile(code)) {
-                return code.toAbsolutePath().getParent();
+                return code.getParent();
             }
             if (Files.isDirectory(code)) {
-                return code.toAbsolutePath().getParent(); // build/classes → app dir
+                Path parent = code.getParent();
+                if (looksLikeAppRoot(parent)) {
+                    return parent;
+                }
+                Path up = parent == null ? null : parent.getParent();
+                if (up != null && looksLikeAppRoot(up)) {
+                    return up;
+                }
+                return parent;
             }
         } catch (Exception ignored) {
             // fall through
         }
-        return Path.of(System.getProperty("user.dir"));
+        return userDir.toAbsolutePath();
+    }
+
+    /** A directory that contains the UPM source layout is the project root. */
+    private static boolean looksLikeAppRoot(Path dir) {
+        if (dir == null) {
+            return false;
+        }
+        return Files.isDirectory(dir.resolve("src/main/java"))
+                || Files.isRegularFile(dir.resolve("pom.xml"))
+                || Files.isRegularFile(dir.resolve("build.sh"));
     }
 
     public static App load(Path appDir, String configPath) {

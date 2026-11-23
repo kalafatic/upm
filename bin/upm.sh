@@ -5,6 +5,9 @@
 # =============================================================================
 set -u
 
+# Keep in sync with upm.App.version.
+VERSION="2.6.11"
+
 APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CONFIG="${UPM_CONFIG:-$APP_DIR/config/application.jsonc}"
 JAVA_BIN="${UPM_JAVA:-/usr/lib/jvm/java-21-openjdk-amd64/bin/java}"
@@ -95,43 +98,49 @@ print_op_result() {
 
 usage() {
   cat <<EOF
-Universal Project Manager — CLI
+UPM — Universal Project Manager CLI
 
-Usage: upm.sh <command> [options]
+Usage: upm <command> [options]          (a leading '-'/'--' is also accepted)
+
+Server & service:
+  -health                       Control-center health + lifecycle state
+  -ports                        Port inventory (EVO family + live listeners)
+  -version                      Print the UPM version
+  -service <cmd> [--system]     systemd service: status|start|stop|restart|install|uninstall
+  shutdown                      Stop the backend
 
 Workspace:
-  list                        List registered projects
-  status                      Runtime + build/test status
-  doctor                      Workspace diagnostics
-  report                      Aggregated build/test/report matrix
-  gui                         Open the interface in the browser
-  shutdown                    Stop the backend
+  list                          List registered projects
+  status                        Runtime + build/test status
+  doctor                        Workspace diagnostics
+  report                        Aggregated build/test/report matrix
+  gui                           Open the interface in the browser
 
 Projects (use 'all' for every project):
   build|clean-build|update|test|package|verify|install <project|all>
-  run <project> [launchConfig] [port]
-  stop <project|all>          Stop a runtime
-  restart <project>           Restart a runtime
-  logs <project>              Runtime log
-  diagnostics <project>       Project diagnostics
+  run|start <project> [launchConfig] [port]
+  stop <project|all>            Stop a runtime
+  restart <project>             Restart a runtime
+  logs <project>                Runtime log
+  diagnostics <project>         Project diagnostics
 
 Git:
-  git-status <project>        Branch, HEAD and changed files
+  git-status <project>          Branch, HEAD and changed files
   git-fetch|git-pull <project>
-  git-push <project>          Requires explicit confirmation (--yes)
+  git-push <project>            Requires explicit confirmation (--yes)
 
 Workspaces and profiles:
-  ws-list                     List workspaces
-  ws-switch <id>              Switch the active workspace
+  ws-list                       List workspaces
+  ws-switch <id>                Switch the active workspace
   ws-create <id> [name]
-  ws-export <id> [file]       Export a portable configuration package
-  profile-launch <id>         Launch a profile (dependency-aware order)
-  profile-stop <id>           Stop a profile's projects
+  ws-export <id> [file]         Export a portable configuration package
+  profile-launch <id>           Launch a profile (dependency-aware order)
+  profile-stop <id>             Stop a profile's projects
 
 Global:
-  launch-all                  Launch all projects (dependency-aware order)
-  stop-all                    Stop all projects
-  restart-all                 Stop all, then launch all
+  launch-all|start-all          Launch all projects (dependency-aware order)
+  stop-all                      Stop all projects
+  restart-all                   Stop all, then launch all
 EOF
 }
 
@@ -139,10 +148,34 @@ main() {
   local cmd="${1:-}"
   [[ -z "$cmd" || "$cmd" == "help" || "$cmd" == "-h" || "$cmd" == "--help" ]] && { usage; exit 0; }
 
+  # Accept the `upm -command` namespace as well as `upm command`.
+  while [[ "$cmd" == -* && "$cmd" != "-" ]]; do cmd="${cmd#-}"; done
+
   resolve_port
 
   case "$cmd" in
     shutdown|stop-backend) backend_stop; exit $? ;;
+    version) echo "UPM $VERSION"; exit 0 ;;
+    service) shift; "$APP_DIR/bin/upm-service.sh" "$@"; exit $? ;;
+    health)
+      if daemon_alive; then
+        api_call GET "/api/server" | python3 -c '
+import json,sys
+d=json.load(sys.stdin)
+print("state:        {}".format(d.get("state")))
+print("pid:          {}".format(d.get("pid")))
+print("bind:         {}:{}".format(d.get("host"), d.get("boundPort") or d.get("port")))
+print("configured:   {}".format(d.get("configuredPort")))
+print("startupMs:    {}".format(d.get("startupMs")))
+print("version:      {}".format(d.get("version")))
+if d.get("cause"): print("port cause:   {}".format(d["cause"]))
+' 2>/dev/null
+        exit 0
+      else
+        err "UPM backend is not running."
+        exit 1
+      fi
+      ;;
   esac
 
   if ! daemon_alive; then backend_start; fi
@@ -194,6 +227,21 @@ for p in d["projects"]:
     print("{:<9} {:<10} {:<10} {:<10} {:<10}".format(p["project"],b,u,t,p["runtimeState"]))
 ' 2>/dev/null
       ;;
+    ports)
+      api_call GET "/api/ports/inventory" | python3 -c '
+import json,sys
+d=json.load(sys.stdin)
+cc=d.get("controlCenter") or {}
+print("UPM: {}:{} (pid {})".format(cc.get("host"), cc.get("port"), cc.get("pid")))
+s=d.get("summary") or {}
+print("summary: {} running, {} ready, {} occupied".format(s.get("running"), s.get("ready"), s.get("occupied")))
+print("{:<8} {:>6} {:<8} {:<12} {:<20}".format("App","Port","Status","Service","Process"))
+for e in d.get("entries") or []:
+    print("{:<8} {:>6} {:<8} {:<12} {:<20}".format(
+        e.get("app"), e.get("port"), e.get("status"), e.get("service"),
+        (e.get("process") or "")[:20]))
+' 2>/dev/null
+      ;;
     build|clean-build|update|test|package|verify|install)
       local project="${2:-}"
       [[ -z "$project" ]] && { err "Usage: upm.sh $cmd <project|all>"; exit 1; }
@@ -222,7 +270,7 @@ for p in d["projects"]:
         [[ "$out" == *'"SUCCEEDED"'* ]] || exit 1
       fi
       ;;
-    run)
+    run|start)
       local project="${2:-}" lc="${3:-}" port="${4:-}"
       [[ -z "$project" ]] && { err "Usage: upm.sh run <project> [launchConfig] [port]"; exit 1; }
       local out opid body
@@ -261,7 +309,7 @@ print("Stopped." if d.get("ok") else "ERROR: "+d.get("error",""))
       out="$(wait_op "$opid")"
       print_op_result "$out"
       ;;
-    launch-all|stop-all|restart-all)
+    launch-all|start-all|stop-all|restart-all)
       local gtype="launchAll"
       [[ "$cmd" == "stop-all" ]] && gtype="stopAll"
       [[ "$cmd" == "restart-all" ]] && gtype="restartAll"

@@ -1,9 +1,9 @@
 [Desktop Entry]
 Version=1.0
 Type=Application
-Name=Universal Project Manager (Stop)
-Comment=Stop the Universal Project Manager backend
-Exec=/home/petr/git/UniversalProjectManager/bin/upm.sh shutdown
+Name=UPM (Stop)
+Comment=Stop the UPM backend
+Exec=@APP_DIR@/bin/upm.sh shutdown
 Icon=process-stop
 Terminal=false
 Categories=Development;

@@ -1,4 +1,4 @@
-/* Universal Project Manager — frontend (vanilla JS, no frameworks) */
+/* UPM — frontend (vanilla JS, no frameworks) */
 "use strict";
 
 const $ = (sel) => document.querySelector(sel);
@@ -2577,7 +2577,7 @@ $("#confirm-backdrop").addEventListener("click", (e) => {
     const s = await api("/api/state");
     applySnapshot(s);
   } catch (e) {
-    document.body.innerHTML = '<p style="padding:40px;color:#f0655a">Universal Project Manager backend unavailable: ' +
+    document.body.innerHTML = '<p style="padding:40px;color:#f0655a">UPM backend unavailable: ' +
       esc(e.message) + "<br>Start it with: launch.sh</p>";
     return;
   }

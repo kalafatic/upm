@@ -122,7 +122,7 @@ public final class Diag {
         int ccPort = Main.currentPort;
         boolean ccPortFree = !Probe.tcpOpen("127.0.0.1", ccPort, 500)
                 || (Main.selfPid > 0 && Probe.ownerOf(ccPort).contains(String.valueOf(Main.selfPid)));
-        checks.add(check("ccPort", "Control center port " + ccPort,
+        checks.add(check("ccPort", "UPM port " + ccPort,
                 ccPortFree, ccPortFree ? "" : "port in use by another process"));
         for (Config.Project p : cfg.projects) {
             if (!Files.isDirectory(Path.of(p.repoDir))) {

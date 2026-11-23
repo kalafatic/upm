@@ -1,4 +1,4 @@
-# Universal Project Manager
+# UPM (Universal Project Manager)
 
 A standalone, portable, minimalist application for managing software
 development projects: discover, add, build, test, launch, monitor and stop —

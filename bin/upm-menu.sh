@@ -8,7 +8,7 @@ UPM="$APP_DIR/bin/upm.sh"
 print_header() {
   clear
   echo "=============================================================="
-  echo "           UNIVERSAL PROJECT MANAGER — Terminal"
+  echo "                     UPM — Terminal"
   echo "=============================================================="
   "$UPM" status 2>/dev/null | head -20
   echo "--------------------------------------------------------------"

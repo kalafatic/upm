@@ -1,0 +1,25 @@
+[Unit]
+Description=UPM - Universal Project Manager
+Documentation=https://github.com/kalafatic/upm
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=@USER@
+Group=@GROUP@
+WorkingDirectory=@APP_DIR@
+ExecStart=@JAVA_BIN@ -jar @APP_DIR@/universal-project-manager.jar @APP_DIR@/config/application.jsonc
+# 143 = SIGTERM: the JVM shutdown hook performs a clean, graceful stop.
+SuccessExitStatus=143
+Restart=on-failure
+RestartSec=3
+TimeoutStartSec=60
+TimeoutStopSec=30
+# Prevent inherited JVM flags (e.g. dev-time entity limits) from leaking in.
+Environment=JAVA_TOOL_OPTIONS=
+StandardOutput=append:@APP_DIR@/logs/upm.log
+StandardError=append:@APP_DIR@/logs/upm.log
+
+[Install]
+WantedBy=multi-user.target

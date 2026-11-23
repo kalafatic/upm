@@ -59,7 +59,7 @@ public final class EnrProxy {
             return err("ENR not configured");
         }
         if (!isSafeGet(subPath)) {
-            return err("ENR path not allowed through the control center");
+            return err("ENR path not allowed through UPM");
         }
         String body = Probe.httpGet(base + subPath, 4000);
         if (body == null) {
@@ -85,7 +85,7 @@ public final class EnrProxy {
         }
         boolean allowed = subPath.equals("/models/load") || subPath.equals("/models/unload");
         if (!allowed) {
-            return err("ENR action not allowed through the control center");
+            return err("ENR action not allowed through UPM");
         }
         try {
             HttpURLConnection conn = (HttpURLConnection) new URL(base + subPath).openConnection();

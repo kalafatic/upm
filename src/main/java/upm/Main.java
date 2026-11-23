@@ -7,9 +7,10 @@ import java.nio.file.Path;
 import java.time.LocalTime;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
+import java.util.Map;
 
 /**
- * Universal Project Manager entry point. Starts the embedded HTTP server,
+ * UPM entry point. Starts the embedded HTTP server,
  * detects an already-running instance, opens the browser and watches managed
  * runtime processes.
  */
@@ -20,6 +21,7 @@ public final class Main {
     public static volatile Config currentConfig;
     private static volatile State stateRef;
     private static volatile Metrics metricsRef;
+    private static volatile Server serverRef;
 
     public static State getState() {
         return stateRef;
@@ -27,6 +29,10 @@ public final class Main {
 
     public static Metrics getMetrics() {
         return metricsRef;
+    }
+
+    public static Server getServer() {
+        return serverRef;
     }
 
     private static final DateTimeFormatter TS = DateTimeFormatter.ofPattern("HH:mm:ss");
@@ -39,14 +45,15 @@ public final class Main {
 
         // Single-instance detection: if another UPM instance already answers
         // on one of the configured ports, reuse it instead of starting a new one.
-//        String existing = app.webServerEnabled ? findExisting(app) : null;
-//        if (existing != null) {
-//            log("INFO", "Universal Project Manager already running at " + existing);
-//            if (app.openBrowser) {
-//                openBrowser(existing, app);
-//            }
-//            return;
-//        }
+        reconcileServerState(app);
+        String existing = app.webServerEnabled ? findExisting(app) : null;
+        if (existing != null) {
+            log("INFO", "[UPM][STARTUP] another instance already running at " + existing);
+            if (app.openBrowser) {
+                openBrowser(existing, app);
+            }
+            return;
+        }
 
         Proc.selfPgid = readOwnPgid();
         Files.createDirectories(app.runtimeDir);
@@ -81,17 +88,19 @@ public final class Main {
 
         if (app.webServerEnabled && app.webServerAutoStart) {
             Server server = new Server(app, state, ops, proc, diag, enr, dash, metrics, store);
+            serverRef = server;
             server.start();
             Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-                log("INFO", "Universal Project Manager shutting down");
+                log("INFO", "[UPM][SHUTDOWN] initiating");
                 server.stop();
-            }));
+                state.persistNow();
+            }, "upm-shutdown-hook"));
         } else if (!app.webServerEnabled) {
-            log("INFO", "Web server disabled by configuration (webServer.enabled=false). "
-                    + "Backend services run without a web interface.");
+            log("INFO", "[UPM][STARTUP] web server disabled by configuration "
+                    + "(webServer.enabled=false). Backend services run without a web interface.");
         } else {
-            log("INFO", "Web server auto-start disabled (webServer.autoStart=false). "
-                    + "Backend services run; the web server is not started.");
+            log("INFO", "[UPM][STARTUP] web server auto-start disabled "
+                    + "(webServer.autoStart=false). Backend services run; the web server is not started.");
         }
 
         Thread watchdog = new Thread(() -> {
@@ -137,11 +146,31 @@ public final class Main {
             int port = app.port + i;
             String url = "http://" + app.host + ":" + port + "/api/health";
             String body = Probe.httpGet(url, 700);
-            if (body != null && body.contains("universal-project-manager")) {
+            if (body != null && (body.contains("\"app\":\"upm\"")
+                    || body.contains("\"app\":\"universal-project-manager\""))) {
                 return "http://" + app.host + ":" + port + "/";
             }
         }
         return null;
+    }
+
+    /** Clears a stale server state file whose recorded pid is no longer alive. */
+    private static void reconcileServerState(App app) {
+        Path f = app.runtimeDir.resolve("upm").resolve("server.json");
+        try {
+            if (!Files.exists(f)) {
+                return;
+            }
+            Map<String, Object> m = Json.obj(Json.parse(Files.readString(f)));
+            long pid = Json.longVal(m, "pid", -1);
+            if (pid <= 0 || !Proc.isAlive(pid)) {
+                Files.deleteIfExists(f);
+                log("INFO", "[UPM][RECONCILE] cleared stale server state"
+                        + (pid > 0 ? " (pid " + pid + " no longer alive)" : ""));
+            }
+        } catch (Exception ignored) {
+            // best effort
+        }
     }
 
     private static void openBrowser(String url, App app) {
@@ -203,11 +232,11 @@ public final class Main {
                     ps.startedAt = -1;
                     ps.lastError = "";
                     log("INFO", p.id + ": process " + deadPid
-                            + " exited gracefully while the control center was away");
+                            + " exited gracefully while UPM was away");
                 } else {
                     ps.runtimeState = "FAILED";
                     ps.lastError = "Process " + deadPid
-                            + " was not running when the control center restarted.";
+                            + " was not running when UPM restarted.";
                 }
                 try {
                     Files.deleteIfExists(proc.pidFile(p.id, lcId));
