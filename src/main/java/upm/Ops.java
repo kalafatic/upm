@@ -146,6 +146,7 @@ public final class Ops {
                         extra == null ? null : (String) extra.get("message"));
                 case "checkUpdates" -> runCheckUpdates(op, op.projectId);
                 case "updateAll" -> runUpdateAll(op, op.projectId, extra);
+                case "ftest" -> runFuncTest(op, op.projectId, mode, extra);
                 default -> state.finishOp(op, "FAILED", null, "Unknown operation type: " + type);
             }
         } catch (Throwable e) {
@@ -788,6 +789,60 @@ public final class Ops {
         } else {
             state.finishOp(op, "SUCCEEDED", summary, null);
             state.notify("success", projectId, "Tests completed", summary, "");
+        }
+    }
+
+    /**
+     * Instance-level functional test (TEST action). Executes a real,
+     * product-specific functional scenario for a single (project, launch
+     * configuration, execution mode) triple and persists the structured result.
+     */
+    private void runFuncTest(State.Op op, String projectId, String lcId,
+            Map<String, Object> extra) {
+        Config cfg = Main.currentConfig;
+        Config.Project p = cfg == null ? null : cfg.project(projectId);
+        if (p == null) {
+            state.finishOp(op, "FAILED", null, "Unknown project: " + projectId);
+            return;
+        }
+        Config.LaunchConfig lc = p.launch(lcId);
+        if (lc == null) {
+            state.finishOp(op, "FAILED", null, "Unsupported launch configuration '" + lcId
+                    + "' for " + projectId + " (available: "
+                    + String.join(", ", p.launchConfigs.stream().map(l -> l.id).toList()) + ")");
+            return;
+        }
+        String modeStr = extra == null ? null : Json.str(extra, "mode", "web");
+        FuncTest.Mode mode = FuncTest.Mode.from(modeStr);
+        if (!FuncTest.deriveModes(lc).contains(mode)) {
+            state.finishOp(op, "FAILED", null, "Execution mode " + mode.label
+                    + " is not applicable to launch configuration '" + lcId + "' ("
+                    + (lc.requiresDisplay ? "RCP" : "headless" + (lc.readiness != null
+                            && "http".equals(lc.readiness.type) ? ", web" : "")) + ").");
+            return;
+        }
+        FuncTest.Run run = FuncTest.run(app, state, proc, op, p, lc, mode);
+        FuncTest.save(app, run);
+        FuncTest.writeLatest(app, run);
+        switch (run.status) {
+            case PASS -> state.finishOp(op, "SUCCEEDED", run.summary, null);
+            case FAIL -> state.finishOp(op, "FAILED", run.summary,
+                    FuncTest.Status.FAIL.name() + ": " + run.summary);
+            case PARTIAL -> state.finishOp(op, "FAILED", run.summary,
+                    FuncTest.Status.PARTIAL.name() + ": " + run.summary);
+            case BLOCKED -> state.finishOp(op, "FAILED", run.summary,
+                    FuncTest.Status.BLOCKED.name() + ": " + run.summary);
+            default -> state.finishOp(op, "FAILED", run.summary,
+                    FuncTest.Status.NOT_IMPLEMENTED.name() + ": " + run.summary);
+        }
+        if (run.status == FuncTest.Status.PASS) {
+            state.notify("success", projectId, "Functional test passed",
+                    run.launchConfigId + " (" + run.mode.label + "): " + run.summary, "");
+        } else {
+            state.notify(run.status == FuncTest.Status.FAIL ? "error" : "warning", projectId,
+                    "Functional test " + run.status.name().toLowerCase(),
+                    run.launchConfigId + " (" + run.mode.label + "): " + run.summary,
+                    "Open the test run details for step-level evidence.");
         }
     }
 

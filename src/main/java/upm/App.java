@@ -21,7 +21,7 @@ public final class App {
     public volatile int port = 29080;
     public volatile int portFallbackRange = 100;
     public volatile boolean openBrowser = true;
-    public volatile String theme = "dark";
+    public volatile String theme = "light";
     public volatile String language = "en";
     public volatile String defaultWorkspace = "default";
     public volatile String defaultRepositoryDir = "~/git";

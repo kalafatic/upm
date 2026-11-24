@@ -114,7 +114,7 @@ function applySnapshot(s) {
     state.dashboard = { columns: 3, widgets: [] };
   }
   draftLayout = null;
-  document.documentElement.dataset.theme = (state.app && state.app.theme) || "dark";
+  document.documentElement.dataset.theme = (state.app && state.app.theme) || "light";
   $("#ws-name").textContent = state.workspace ? state.workspace.name : "";
   lastKnownNotifs = (state.notifications || []).length;
   renderAll();
@@ -246,6 +246,7 @@ function renderProjectTable() {
       '<td><button class="btn btn-sm" data-open-project="' + p.id + '">Open</button> ' +
       '<button class="btn btn-sm" data-act="build" data-p="' + p.id + '">Build</button> ' +
       '<button class="btn btn-sm" data-act="run" data-p="' + p.id + '">Run</button> ' +
+      '<button class="btn btn-sm" data-act="ftest" data-p="' + p.id + '">Test</button> ' +
       (p.runtimeState !== "STOPPED" && p.runtimeState !== "FAILED"
         ? '<button class="btn btn-sm btn-danger" data-act="stop" data-p="' + p.id + '">Stop</button>'
         : "") + "</td>";
@@ -817,7 +818,8 @@ function renderProjects() {
     ' <span class="muted">' + esc(p.id) + "</span>";
   const tabs = $("#project-tabs");
   const tabDefs = [["overview", "Overview"], ["structure", "Structure"], ["git", "Git"],
-    ["build", "Build"], ["launch", "Launch"], ["logs", "Logs"], ["config", "Configuration"]];
+    ["build", "Build"], ["launch", "Launch"], ["ftest", "Functional Tests"], ["logs", "Logs"],
+    ["config", "Configuration"]];
   if (tabs.dataset.project !== p.id) {
     tabs.dataset.project = p.id;
     tabs.innerHTML = "";
@@ -838,6 +840,7 @@ function renderProjects() {
     case "git": renderGitTab(p, body); break;
     case "build": renderBuildTab(p, body); break;
     case "launch": renderLaunchTab(p, body); break;
+    case "ftest": renderFTestTab(p, body); break;
     case "logs": renderLogsTab(p, body); break;
     case "config": renderConfigTab(p, body); break;
   }
@@ -948,7 +951,8 @@ function renderOverviewTab(p, body) {
     tr.innerHTML = "<td><b>" + esc(lc.name) + "</b>" + (lc.default ? " <span class='tag'>default</span>" : "") + "</td>" +
       "<td class='mono'>" + esc(lc.kind) + "</td>" +
       "<td>" + (lc.launcherExists ? '<span class="ok-text">built</span>' : '<span class="warn-text">not built</span>') + "</td>" +
-      '<td><button class="btn btn-sm" data-act="run-lc" data-p="' + p.id + '" data-lc="' + lc.id + '">Run</button></td>';
+      '<td><button class="btn btn-sm" data-act="run-lc" data-p="' + p.id + '" data-lc="' + lc.id + '">Run</button> ' +
+      '<button class="btn btn-sm" data-act="ftest-lc" data-p="' + p.id + '" data-lc="' + lc.id + '">Test</button></td>';
     tb.appendChild(tr);
   }
   t.appendChild(tb);
@@ -1140,7 +1144,7 @@ function renderBuildTab(p, body) {
     body.appendChild(el("div", "muted", last.summary || ""));
     if (last.error) {
       const box = el("div", "log-view small", last.error);
-      box.style.color = "#f0a8a2";
+      box.style.color = "var(--err)";
       body.appendChild(box);
     }
   }
@@ -1166,6 +1170,7 @@ function renderLaunchTab(p, body) {
       "<td>" + portInfo + "</td>" +
       "<td>" + (lc.launcherExists ? '<span class="ok-text">ready</span>' : '<span class="warn-text">not built</span>') + "</td>" +
       '<td><button class="btn btn-sm" data-act="run-lc" data-p="' + p.id + '" data-lc="' + lc.id + '">Run</button> ' +
+      '<button class="btn btn-sm" data-act="ftest-lc" data-p="' + p.id + '" data-lc="' + lc.id + '">Test</button> ' +
       '<button class="btn btn-sm" data-act="edit-lc" data-p="' + p.id + '" data-lc="' + lc.id + '">Edit</button> ' +
       '<button class="btn btn-sm" data-act="dup-lc" data-p="' + p.id + '" data-lc="' + lc.id + '">Duplicate</button> ' +
       '<button class="btn btn-sm" data-act="def-lc" data-p="' + p.id + '" data-lc="' + lc.id + '">Default</button> ' +
@@ -1229,6 +1234,165 @@ function renderConfigTab(p, body) {
   body.appendChild(el("div", "muted",
     "Configuration lives in workspaces/" + state.workspace.id + "/workspace.jsonc (JSONC). " +
       "Commands are validated by the backend; arbitrary commands cannot be issued through the web API."));
+}
+
+// ------------------------------------------------------ functional tests
+
+function ftestBadge(status) {
+  return '<span class="badge st-' + (status || "NOT_RUN") + '">' + (status || "NOT_RUN") + "</span>";
+}
+
+async function runFTest(projectId, launchConfigId, mode) {
+  try {
+    const r = await api("/api/ftests", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ project: projectId, launchConfig: launchConfigId, mode: mode || "web" }),
+    });
+    toast("info", projectId, "Functional test started (run #" + r.opId + ")");
+    refreshState();
+    return r.opId;
+  } catch (e) {
+    toast("error", projectId, e.message);
+    return null;
+  }
+}
+
+function renderFTestTab(p, body) {
+  body.innerHTML = "";
+  const row = el("div", "row");
+  const runAll = el("button", "btn btn-primary", "Run all tests");
+  runAll.onclick = async () => {
+    const insts = (p.funcTestInstances || []).filter((i) => i.mode !== "RCP");
+    if (!insts.length) { toast("error", p.id, "No non-RCP instances to test"); return; }
+    for (const i of insts) {
+      await runFTest(p.id, i.launchConfig, i.mode);
+    }
+  };
+  row.appendChild(runAll);
+  for (const fmt of ["html", "json", "md", "zip"]) {
+    const b = el("button", "btn btn-sm", "Export " + fmt.toUpperCase());
+    b.onclick = () => downloadFTest(fmt, "project", { project: p.id });
+    row.appendChild(b);
+  }
+  body.appendChild(row);
+  body.appendChild(el("h4", "", "Functional test instances"));
+  const insts = p.funcTestInstances || [];
+  if (!insts.length) {
+    body.appendChild(el("div", "muted", "No launch configurations to test for this project."));
+    return;
+  }
+  const t = el("table", "tbl");
+  t.innerHTML = "<thead><tr><th>Instance</th><th>Mode</th><th>Last result</th><th></th></tr></thead>";
+  const tb = el("tbody");
+  for (const i of insts) {
+    const last = i.lastResult;
+    const tr = el("tr");
+    const lastCell = last
+      ? ftestBadge(last.status) + " · " + fmtTime(last.endMs) + '<br><span class="muted">' + esc(last.summary || "") + "</span>"
+      : '<span class="muted">not run</span>';
+    tr.innerHTML = "<td><b>" + esc(i.launchConfigName || i.launchConfig) + "</b></td>" +
+      "<td>" + esc(i.modeLabel || i.mode) + "</td>" +
+      "<td>" + lastCell + "</td>" +
+      '<td><button class="btn btn-sm" data-ftest-run="' + p.id + "|" + i.launchConfig + "|" + i.mode + '">Run</button> ' +
+      (last ? '<button class="btn btn-sm" data-ftest-view="' + last.id + '">View</button>' : "") + "</td>";
+    tb.appendChild(tr);
+  }
+  t.appendChild(tb);
+  body.appendChild(t);
+  body.appendChild(el("div", "muted",
+    "TEST verifies that the instance actually works in the selected execution mode — each row " +
+      "runs independently. Results can be exported individually or collectively."));
+}
+
+function openFTestChooser(projectId, lcId) {
+  const p = project(projectId);
+  if (!p) return;
+  let insts = p.funcTestInstances || [];
+  if (lcId) insts = insts.filter((i) => i.launchConfig === lcId);
+  if (!insts.length) {
+    toast("error", projectId, "No testable instances" + (lcId ? " for " + lcId : "") + ".");
+    return;
+  }
+  let html = '<table class="tbl"><thead><tr><th>Instance</th><th>Mode</th><th>Last</th><th></th></tr></thead><tbody>';
+  for (const i of insts) {
+    const last = i.lastResult;
+    html += "<tr><td><b>" + esc(i.launchConfigName || i.launchConfig) + "</b></td>" +
+      "<td>" + esc(i.modeLabel || i.mode) + "</td>" +
+      "<td>" + (last ? ftestBadge(last.status) : '<span class="muted">—</span>') + "</td>" +
+      '<td><button class="btn btn-sm btn-primary" data-ftest-run="' + p.id + "|" + i.launchConfig + "|" + i.mode + '">Run</button></td></tr>';
+  }
+  html += "</tbody></table>";
+  html += '<div class="muted">Each mode is tested independently — testing one mode does not validate another.</div>';
+  openModal("Test — " + esc(p.name), html);
+}
+
+async function openFTestRun(runId) {
+  let run;
+  try {
+    run = await api("/api/ftests/" + runId);
+  } catch (e) {
+    openModal("Functional test #" + runId, '<p class="err-text">' + esc(e.message) + "</p>");
+    return;
+  }
+  renderFTestRunModal(run);
+}
+
+function renderFTestRunModal(run) {
+  let html = '<div class="kv">';
+  for (const [k, v] of [
+    ["Project", run.projectName + " (" + run.project + ")"],
+    ["Instance", run.launchConfig],
+    ["Mode", run.modeLabel + " (" + run.mode + ")"],
+    ["Status", ftestBadge(run.status)],
+    ["Duration", fmtDuration(run.durationMs)],
+    ["Started", fmtTime(run.startMs)],
+    ["Scenario", run.scenario],
+  ]) {
+    html += '<div class="k">' + k + '</div><div class="v">' + (k === "Status" ? v : esc(v)) + "</div>";
+  }
+  html += "</div>";
+  if (run.summary) html += '<p class="muted">' + esc(run.summary) + "</p>";
+  html += "<h4>Steps</h4><table class='tbl'><thead><tr><th>#</th><th>Step</th><th>Status</th><th>Actual</th></tr></thead><tbody>";
+  for (const s of run.steps || []) {
+    html += "<tr><td>" + s.seq + "</td><td><b>" + esc(s.name) + "</b>" +
+      (s.description ? '<br><span class="muted">' + esc(s.description) + "</span>" : "") +
+      "</td><td>" + ftestBadge(s.status) + "</td><td>" + esc(s.actual || "") +
+      (s.error ? '<br><span class="err-text">' + esc(s.error) + "</span>" : "") +
+      "</td></tr>";
+  }
+  html += "</tbody></table>";
+  for (const s of run.steps || []) {
+    if (s.log && s.log.trim()) {
+      html += "<h4>" + s.seq + ". " + esc(s.name) + " — output</h4>" +
+        '<div class="log-view small">' + esc(s.log.slice(-4000)) + "</div>";
+    }
+  }
+  if (run.diagnostics && Object.keys(run.diagnostics).length) {
+    html += "<h4>Routing / diagnostics</h4>" +
+      '<div class="log-view small">' + esc(JSON.stringify(run.diagnostics, null, 2)) + "</div>";
+  }
+  html += "<h4>Export</h4><div class='row'>";
+  for (const fmt of ["html", "json", "md", "zip"]) {
+    html += '<button class="btn btn-sm" data-ftest-export="' + fmt + "|run|" + run.id + '">' + fmt.toUpperCase() + "</button> ";
+  }
+  html += "</div>";
+  openModal("Functional test #" + run.id + " — " + esc(run.project), html);
+}
+
+function downloadFTest(format, scope, opts) {
+  const q = new URLSearchParams({ format, scope });
+  if (opts) {
+    if (opts.project) q.set("project", opts.project);
+    if (opts.mode) q.set("mode", opts.mode);
+    if (opts.runId) q.set("runId", opts.runId);
+  }
+  const a = document.createElement("a");
+  a.href = "/api/ftests/export?" + q.toString();
+  a.download = "upm-ftests." + (format === "md" ? "md" : format);
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
 }
 
 // ------------------------------------------------------ add/edit/remove
@@ -2182,7 +2346,7 @@ async function renderOpDetail(opId) {
     body.appendChild(meta);
     if (op.error) {
       const errBox = el("div", "log-view small", op.error);
-      errBox.style.color = "#f0a8a2";
+      errBox.style.color = "var(--err)";
       body.appendChild(el("h4", "", "Error details"));
       body.appendChild(errBox);
     }
@@ -2244,7 +2408,7 @@ function renderSettings() {
     const theme = el("select");
     theme.appendChild(new Option("Dark", "dark"));
     theme.appendChild(new Option("Light", "light"));
-    theme.value = (state.app && state.app.theme) || "dark";
+    theme.value = (state.app && state.app.theme) || "light";
     const defWs = el("input"); defWs.type = "text"; defWs.value = (state.app && state.app.defaultWorkspace) || "default";
     f("Theme", theme);
     f("Default workspace", defWs);
@@ -2480,6 +2644,24 @@ document.addEventListener("click", (e) => {
       toast("error", "Cancel failed", er.message));
     return;
   }
+  const ftestRun = e.target.closest("[data-ftest-run]");
+  if (ftestRun) {
+    const [pid, lcId, mode] = ftestRun.dataset.ftestRun.split("|");
+    closeModal();
+    runFTest(pid, lcId, mode);
+    return;
+  }
+  const ftestView = e.target.closest("[data-ftest-view]");
+  if (ftestView) {
+    openFTestRun(Number(ftestView.dataset.ftestView));
+    return;
+  }
+  const ftestExport = e.target.closest("[data-ftest-export]");
+  if (ftestExport) {
+    const [fmt, scope, runId] = ftestExport.dataset.ftestExport.split("|");
+    downloadFTest(fmt, scope, { runId: runId ? Number(runId) : undefined });
+    return;
+  }
   const act = e.target.closest("[data-act]");
   if (act) {
     const p = act.dataset.p;
@@ -2500,6 +2682,10 @@ document.addEventListener("click", (e) => {
     } else if (a === "run-lc") {
       startOp("run", p, lc).then((r) => toast("info", p, "Run " + lc + " started (op #" + r.opId + ")"))
         .catch((er) => toast("error", p, er.message));
+    } else if (a === "ftest") {
+      openFTestChooser(p);
+    } else if (a === "ftest-lc") {
+      openFTestChooser(p, lc);
     } else if (a === "edit-lc") openLaunchConfigEditor(p, lc);
     else if (a === "dup-lc") {
       api("/api/projects/" + p + "/launchconfigs/" + lc + "/duplicate", { method: "POST" })

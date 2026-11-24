@@ -52,6 +52,8 @@ public final class Server {
     private long lastMetricsSent = 0;
     private volatile Map<String, Object> portsInventoryCache;
     private volatile long portsInventoryCacheTime;
+    private volatile Map<String, Object> ftestLatestCache;
+    private volatile long ftestLatestCacheTime;
     private volatile boolean running = true;
 
     /**
@@ -406,6 +408,8 @@ public final class Server {
                 json(ex, 200, systemJson());
             } else if (path.startsWith("/api/enr")) {
                 enrRoute(ex, method, path.substring("/api/enr".length()));
+            } else if (path.equals("/api/ftests") || path.startsWith("/api/ftests/")) {
+                funcTestsRoute(ex, method, path.substring("/api/ftests".length()));
             } else if ("/api/dashboard".equals(path)) {
                 dashboardRoute(ex, method);
             } else if ("/api/dashboard/reset".equals(path)) {
@@ -1733,7 +1737,7 @@ public final class Server {
                         "buildProduct", "validateProduct", "buildFeatures", "buildPlugins",
                         "exportProduct", "exportLinux", "exportWindows", "exportMacosx",
                         "exportAll", "buildP2Repository", "publishUpdateSite",
-                        "validateUpdateRepository", "inspectVersions")
+                        "validateUpdateRepository", "inspectVersions", "ftest")
                         .contains(type);
                 boolean validGlobal = List.of("launchAll", "stopAll", "restartAll").contains(type);
                 boolean validGit = List.of("gitFetch", "gitPull", "gitPush", "gitCommit",
@@ -1864,6 +1868,220 @@ public final class Server {
         } else {
             json(ex, 405, err("Method not allowed"));
         }
+    }
+
+    // ---------------------------------------------------------- func tests
+
+    private void funcTestsRoute(HttpExchange ex, String method, String rest) throws IOException {
+        if (rest.isEmpty()) {
+            if ("GET".equals(method)) {
+                Map<String, Object> m = new LinkedHashMap<>();
+                Map<String, Object> latest = FuncTest.latest(app);
+                List<Map<String, Object>> instances = new ArrayList<>();
+                for (FuncTest.Instance in : FuncTest.instances(Main.currentConfig)) {
+                    Object last = latest.get(in.key());
+                    instances.add(in.toJson(last instanceof Map<?, ?> lm
+                            ? castObj(lm) : null));
+                }
+                m.put("instances", instances);
+                m.put("runs", FuncTest.allRuns(app));
+                json(ex, 200, m);
+            } else if ("POST".equals(method)) {
+                Map<String, Object> body = readBody(ex);
+                String project = Json.str(body, "project");
+                String launchConfig = Json.str(body, "launchConfig");
+                String modeStr = Json.str(body, "mode", "web");
+                if (project == null || Main.currentConfig.project(project) == null) {
+                    json(ex, 404, err("Unknown project: " + project));
+                    return;
+                }
+                Config.Project p = Main.currentConfig.project(project);
+                Config.LaunchConfig lc = p.launch(launchConfig);
+                if (lc == null) {
+                    json(ex, 404, err("Unknown launch configuration: " + launchConfig));
+                    return;
+                }
+                FuncTest.Mode mode = FuncTest.Mode.from(modeStr);
+                if (!FuncTest.deriveModes(lc).contains(mode)) {
+                    json(ex, 400, err("Execution mode " + mode.label
+                            + " is not applicable to launch configuration '" + launchConfig + "'."));
+                    return;
+                }
+                Map<String, Object> extra = new LinkedHashMap<>();
+                extra.put("mode", mode.name());
+                String result = ops.submit(project, "ftest", launchConfig, null, extra);
+                Object parsed = Json.parse(result);
+                if (result.contains("\"error\"")) {
+                    json(ex, 409, parsed);
+                } else {
+                    json(ex, 200, parsed);
+                }
+            } else {
+                json(ex, 405, err("Method not allowed"));
+            }
+            return;
+        }
+        if (rest.equals("/export")) {
+            exportFuncTests(ex, method);
+            return;
+        }
+        String[] seg = rest.substring(1).split("/");
+        long id;
+        try {
+            id = Long.parseLong(seg[0]);
+        } catch (NumberFormatException e) {
+            json(ex, 404, err("Invalid run id"));
+            return;
+        }
+        if (seg.length == 1) {
+            if ("GET".equals(method)) {
+                FuncTest.Run run = FuncTest.load(app, id);
+                if (run == null) {
+                    json(ex, 404, err("Unknown test run: " + id));
+                } else {
+                    json(ex, 200, run.toJson());
+                }
+            } else {
+                json(ex, 405, err("Method not allowed"));
+            }
+        } else if ("log".equals(seg[1]) && "GET".equals(method)) {
+            FuncTest.Run run = FuncTest.load(app, id);
+            if (run == null) {
+                json(ex, 404, err("Unknown test run: " + id));
+                return;
+            }
+            StringBuilder sb = new StringBuilder();
+            for (FuncTest.Step s : run.steps) {
+                sb.append("=== step ").append(s.seq).append(": ").append(s.name)
+                        .append(" (").append(s.status).append(") ===\n").append(s.log);
+                if (s.error != null && !s.error.isBlank()) {
+                    sb.append("--- error ---\n").append(s.error).append('\n');
+                }
+            }
+            json(ex, 200, Map.of("id", id, "log", sb.toString()));
+        } else if ("cancel".equals(seg[1]) && "POST".equals(method)) {
+            json(ex, 200, Map.of("ok", ops.cancel(id)));
+        } else {
+            json(ex, 404, err("Unknown ftest path"));
+        }
+    }
+
+    private void exportFuncTests(HttpExchange ex, String method) throws IOException {
+        if (!"GET".equals(method)) {
+            json(ex, 405, err("GET required"));
+            return;
+        }
+        String query = ex.getRequestURI().getQuery();
+        String format = "html";
+        String scope = "all";
+        String project = "";
+        String mode = "";
+        long runId = -1;
+        if (query != null) {
+            for (String kv : query.split("&")) {
+                String[] kvp = kv.split("=", 2);
+                String k = kvp[0];
+                String v = kvp.length > 1 ? java.net.URLDecoder.decode(kvp[1], StandardCharsets.UTF_8) : "";
+                switch (k) {
+                    case "format" -> format = v;
+                    case "scope" -> scope = v;
+                    case "project" -> project = v;
+                    case "mode" -> mode = v;
+                    case "runId" -> {
+                        try {
+                            runId = Long.parseLong(v);
+                        } catch (NumberFormatException ignored) {
+                            runId = -1;
+                        }
+                    }
+                    default -> { }
+                }
+            }
+        }
+        List<FuncTest.Run> runs = collectRuns(scope, project, mode, runId);
+        String title = exportTitle(scope, project, mode, runId);
+        String fmt = format.toLowerCase(java.util.Locale.ROOT);
+        switch (fmt) {
+            case "json" -> {
+                byte[] b = Report.json(runs).getBytes(StandardCharsets.UTF_8);
+                ex.getResponseHeaders().set("Content-Type", "application/json; charset=utf-8");
+                ex.getResponseHeaders().set("Content-Disposition",
+                        "attachment; filename=upm-ftests.json");
+                ex.sendResponseHeaders(200, b.length);
+                try (OutputStream os = ex.getResponseBody()) {
+                    os.write(b);
+                }
+            }
+            case "md", "markdown" -> {
+                byte[] b = Report.markdown(runs, title).getBytes(StandardCharsets.UTF_8);
+                ex.getResponseHeaders().set("Content-Type", "text/markdown; charset=utf-8");
+                ex.getResponseHeaders().set("Content-Disposition",
+                        "attachment; filename=upm-ftests.md");
+                ex.sendResponseHeaders(200, b.length);
+                try (OutputStream os = ex.getResponseBody()) {
+                    os.write(b);
+                }
+            }
+            case "zip" -> {
+                byte[] b = Report.zip(runs, title);
+                ex.getResponseHeaders().set("Content-Type", "application/zip");
+                ex.getResponseHeaders().set("Content-Disposition",
+                        "attachment; filename=upm-ftests.zip");
+                ex.sendResponseHeaders(200, b.length);
+                try (OutputStream os = ex.getResponseBody()) {
+                    os.write(b);
+                }
+            }
+            default -> {
+                byte[] b = Report.html(runs, title).getBytes(StandardCharsets.UTF_8);
+                ex.getResponseHeaders().set("Content-Type", "text/html; charset=utf-8");
+                ex.getResponseHeaders().set("Content-Disposition",
+                        "attachment; filename=upm-ftests.html");
+                ex.sendResponseHeaders(200, b.length);
+                try (OutputStream os = ex.getResponseBody()) {
+                    os.write(b);
+                }
+            }
+        }
+    }
+
+    private List<FuncTest.Run> collectRuns(String scope, String project, String mode, long runId) {
+        List<FuncTest.Run> out = new ArrayList<>();
+        List<Map<String, Object>> summaries = FuncTest.allRuns(app);
+        for (Map<String, Object> s : summaries) {
+            long id = Json.longVal(s, "id", -1);
+            String p = Json.str(s, "project", "");
+            String m = Json.str(s, "mode", "");
+            boolean include = switch (scope == null ? "all" : scope) {
+                case "all" -> true;
+                case "project" -> p.equals(project);
+                case "mode" -> m.equalsIgnoreCase(mode);
+                case "run", "runId", "id" -> id == runId;
+                default -> false;
+            };
+            if (!include) {
+                continue;
+            }
+            FuncTest.Run r = FuncTest.load(app, id);
+            if (r != null) {
+                out.add(r);
+            }
+        }
+        return out;
+    }
+
+    private String exportTitle(String scope, String project, String mode, long runId) {
+        return switch (scope == null ? "all" : scope) {
+            case "project" -> "UPM Functional Test Report — " + project;
+            case "mode" -> "UPM Functional Test Report — " + mode;
+            case "run", "runId", "id" -> "UPM Functional Test Report — run #" + runId;
+            default -> "UPM Functional Test Report — complete ecosystem";
+        };
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> castObj(Map<?, ?> m) {
+        return (Map<String, Object>) m;
     }
 
     private void dashboardRoute(HttpExchange ex, String method) throws IOException {
@@ -2278,8 +2496,32 @@ public final class Server {
             m.put("lastExport", opResult(lastOp(p.id, "exportProduct")));
             m.put("lastTest", opResult(lastOp(p.id, "test")));
             m.put("lastUpdate", opResult(lastOp(p.id, "update")));
+            m.put("lastFuncTest", opResult(lastOp(p.id, "ftest")));
         }
+        // Per-instance functional test instances + last results.
+        Map<String, Object> latest = ftestLatest();
+        List<Map<String, Object>> ftestInstances = new ArrayList<>();
+        for (FuncTest.Instance in : FuncTest.instances(Main.currentConfig)) {
+            if (!in.projectId.equals(p.id)) {
+                continue;
+            }
+            Object last = latest.get(in.key());
+            ftestInstances.add(in.toJson(last instanceof Map<?, ?> lm ? castObj(lm) : null));
+        }
+        m.put("funcTestInstances", ftestInstances);
         return m;
+    }
+
+    private Map<String, Object> ftestLatest() {
+        long now = System.currentTimeMillis();
+        Map<String, Object> cached = ftestLatestCache;
+        if (cached != null && now - ftestLatestCacheTime < 2000) {
+            return cached;
+        }
+        Map<String, Object> latest = FuncTest.latest(app);
+        ftestLatestCache = latest;
+        ftestLatestCacheTime = now;
+        return latest;
     }
 
     private Map<String, Object> opResult(State.Op op) {

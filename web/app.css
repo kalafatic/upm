@@ -165,6 +165,10 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 12px; }
 .st-UNKNOWN, .st-CANCELLED, .st-UNSUPPORTED, .st-INFERRED { color: var(--muted); border-color: var(--border-strong); background: var(--panel2); }
 .st-PROPOSED { color: var(--info); border-color: var(--info); background: var(--info-soft); }
 .st-DETECTED, .st-USER_CONFIRMED, .st-VERIFIED_STATIC, .st-VERIFIED_RUNTIME { color: var(--ok); border-color: var(--ok); background: var(--ok-soft); }
+.st-PASS { color: var(--ok); border-color: var(--ok); background: var(--ok-soft); }
+.st-FAIL { color: var(--err); border-color: var(--err); background: var(--err-soft); }
+.st-PARTIAL, .st-BLOCKED { color: var(--warn); border-color: var(--warn); background: var(--warn-soft); }
+.st-NOT_IMPLEMENTED, .st-NOT_RUN, .st-SKIP { color: var(--muted); border-color: var(--border-strong); background: var(--panel2); }
 .tag {
   display: inline-block; padding: 0 6px; border-radius: 3px;
   font-size: 10.5px; background: var(--panel2); color: var(--muted);

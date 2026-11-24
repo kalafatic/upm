@@ -412,7 +412,7 @@ public final class Proc {
         return Pattern.compile(sb.toString());
     }
 
-    private String enrClasspath(Config.Project p) {
+    String enrClasspath(Config.Project p) {
         Path cpFile = runDir(p.id, "run").resolve("enr-classpath.txt");
         try {
             if (Files.exists(cpFile) && Files.size(cpFile) > 0
