@@ -65,6 +65,43 @@ function fmtDuration(ms) {
 }
 function fmtTime(ms) { return !ms || ms <= 0 ? "—" : new Date(ms).toLocaleTimeString(); }
 function stateBadge(s) { return '<span class="badge st-' + (s || "UNKNOWN") + '">' + (s || "UNKNOWN") + "</span>"; }
+// Human-readable status presentation: map operation type + status to the
+// required labels (BUILD OK / BUILD FAILED / TESTS OK / …), keeping the raw
+// status as the CSS class so color coding stays correct.
+const BUILD_TYPES = new Set(["build", "cleanbuild", "update", "package", "verify",
+  "install", "validate", "buildmodule", "buildproduct", "exportproduct",
+  "buildplugins", "buildfeatures", "buildp2repository", "publishupdatesite",
+  "exportlinux", "exportwindows", "exportmacosx", "exportall"]);
+const TEST_TYPES = new Set(["test"]);
+function opStatusLabel(op) {
+  const s = (op && op.status) || "UNKNOWN";
+  const t = ((op && op.type) || "").toLowerCase();
+  if (s === "RUNNING" || s === "QUEUED") {
+    return TEST_TYPES.has(t) ? "TESTING" : (BUILD_TYPES.has(t) ? "BUILDING" : s);
+  }
+  if (s === "SUCCEEDED") {
+    return TEST_TYPES.has(t) ? "TESTS OK" : (BUILD_TYPES.has(t) ? "BUILD OK" : "OK");
+  }
+  if (s === "FAILED") {
+    return TEST_TYPES.has(t) ? "TESTS FAILED" : (BUILD_TYPES.has(t) ? "BUILD FAILED" : "FAILED");
+  }
+  if (s === "CANCELLED" || s === "INTERRUPTED") {
+    return TEST_TYPES.has(t) ? "TESTS FAILED" : (BUILD_TYPES.has(t) ? "BUILD FAILED" : s);
+  }
+  return s;
+}
+function opBadge(op) {
+  const s = (op && op.status) || "UNKNOWN";
+  return '<span class="badge st-' + s + '">' + esc(opStatusLabel(op)) + "</span>";
+}
+function runtimeStatusLabel(s) {
+  if (s === "READY" || s === "RUNNING") return "RUNNING";
+  if (s === "FAILED") return "RUNTIME FAILED";
+  return s || "UNKNOWN";
+}
+function runtimeBadge(s) {
+  return '<span class="badge st-' + (s || "UNKNOWN") + '">' + esc(runtimeStatusLabel(s)) + "</span>";
+}
 function mb(bytes) { return bytes == null || bytes < 0 ? "—" : (bytes / 1048576).toFixed(1) + " MB"; }
 function esc(s) {
   return String(s == null ? "" : s).replace(/[&<>"']/g, (c) =>
@@ -239,7 +276,7 @@ function renderProjectTable() {
       "<td>" + gitCell + "</td>" +
       "<td>" + buildCell + "</td>" +
       "<td>" + testCell + "</td>" +
-      "<td>" + stateBadge(p.runtimeState) +
+      "<td>" + runtimeBadge(p.runtimeState) +
         (p.pid > 0 ? ' <span class="mono muted">pid ' + p.pid + "</span>" : "") + "</td>" +
       "<td>" + lastOpCell + "</td>" +
       "<td>" + (warnings.length ? '<span class="warn-text" title="' + esc(warnings.join("\n")) + '">⚠ ' + warnings.length + "</span>" : '<span class="muted">—</span>') + "</td>" +
@@ -299,7 +336,7 @@ function projectStatusWidget() {
     const row = el("div");
     row.style.cursor = "pointer";
     row.dataset.openProject = p.id;
-    row.innerHTML = "<b>" + esc(p.name) + "</b> " + stateBadge(p.runtimeState) +
+    row.innerHTML = "<b>" + esc(p.name) + "</b> " + runtimeBadge(p.runtimeState) +
       (p.pid > 0 ? ' <span class="mono muted">' + p.pid + "</span>" : "");
     list.appendChild(row);
   }
@@ -372,7 +409,7 @@ function runtimeStatusWidget() {
   const tb = el("tbody");
   for (const p of state.projects) {
     const tr = el("tr");
-    tr.innerHTML = "<td><b>" + esc(p.name) + "</b></td><td>" + stateBadge(p.runtimeState) + "</td>" +
+    tr.innerHTML = "<td><b>" + esc(p.name) + "</b></td><td>" + runtimeBadge(p.runtimeState) + "</td>" +
       "<td class='mono'>" + esc(p.launchConfig || "—") + "</td><td>" + fmtDuration(p.uptimeMs) + "</td>";
     tb.appendChild(tr);
   }
@@ -482,7 +519,7 @@ function activeOpsWidget() {
     const row = el("div", "op-item");
     const known = op.progressKnown && op.totalModules > 0;
     row.innerHTML = "<div class='row1'><b>" + esc(op.project || "workspace") + "</b>" +
-      '<span class="muted">' + esc(op.type) + "</span>" + stateBadge(op.status) +
+      '<span class="muted">' + esc(op.type) + "</span>" + opBadge(op) +
       '<span class="muted mono">' + fmtDuration(Date.now() - op.startMs) + "</span>" +
       '<span class="spacer"></span>' +
       "<button class='btn btn-sm' data-open-op='" + op.id + "'>Open</button>" +
@@ -510,7 +547,7 @@ function recentOpsWidget() {
     row.style.cursor = "pointer";
     row.dataset.openOp = op.id;
     row.innerHTML = "<b>" + esc(op.project || "workspace") + "</b> " + esc(op.type) + " — " +
-      stateBadge(op.status) + ' <span class="muted">' +
+      opBadge(op) + ' <span class="muted">' +
       fmtDuration(op.endMs - op.startMs) + "</span>";
     list.appendChild(row);
   }
@@ -804,7 +841,7 @@ function renderProjects() {
   for (const p of state.projects) {
     const row = el("div", "pl-item" + (selectedProject === p.id ? " active" : ""));
     row.innerHTML = "<div class='pl-name'>" + esc(p.name) + "</div>" +
-      "<div class='pl-sub'>" + esc(p.id) + " · " + esc(p.type) + " · " + stateBadge(p.runtimeState) + "</div>";
+      "<div class='pl-sub'>" + esc(p.id) + " · " + esc(p.type) + " · " + runtimeBadge(p.runtimeState) + "</div>";
     row.onclick = () => { selectedProject = p.id; selectedTab = "overview"; renderProjects(); };
     list.appendChild(row);
   }
@@ -2214,7 +2251,7 @@ function openNewProfile() {
   }
   box.appendChild(projBox);
   const order = el("input"); order.type = "text";
-  order.placeholder = "startup order, e.g. ENR,EVO,DCoder";
+  order.placeholder = "startup order, e.g. ENR,EVO,TRYST";
   const f3 = el("div", "field"); f3.appendChild(el("label", "", "Startup order (project ids, comma-separated)")); f3.appendChild(order);
   box.appendChild(f3);
   const saveBtn = el("button", "btn btn-primary", "Create");
@@ -2304,7 +2341,7 @@ function opItem(op) {
   const row = el("div", "op-item");
   const known = op.progressKnown && op.totalModules > 0;
   row.innerHTML = "<div class='row1'><b>" + esc(op.project || "workspace") + "</b> — " +
-    esc(op.type) + (op.mode ? "/" + esc(op.mode) : "") + " " + stateBadge(op.status) +
+    esc(op.type) + (op.mode ? "/" + esc(op.mode) : "") + " " + opBadge(op) +
     ' <span class="muted">' + fmtDuration(op.endMs > 0 ? op.endMs - op.startMs : Date.now() - op.startMs) + "</span></div>" +
     "<div class='row2'>" + esc(op.phase) +
     (known ? " · " + op.completedModules + "/" + op.totalModules + " modules" : "") +
@@ -3106,7 +3143,7 @@ async function renderLlmView() {
         ? m.enrModels.loaded.models : [];
       const tr = document.createElement("tr");
       tr.innerHTML = "<td><b>" + esc(pr.name) + "</b>" +
-        (pr.runtimeState ? " " + stateBadge(pr.runtimeState) : "") + "</td>" +
+        (pr.runtimeState ? " " + runtimeBadge(pr.runtimeState) : "") + "</td>" +
         "<td class='mono'>" + esc(pr.kind) + "</td>" +
         "<td class='mono'>" + esc(pr.endpoint) + "</td>" +
         "<td>" + (pr.health === "healthy" || pr.health === "reachable"

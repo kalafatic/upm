@@ -18,16 +18,16 @@ LOG_DIR="$APP_DIR/logs"
 err() { echo "ERROR: $*" >&2; exit 1; }
 info() { echo "$*"; }
 
-# Locate a JDK 21+ (no hardcoded developer paths).
+# Locate a JDK 25+ (no hardcoded developer paths).
 detect_java() {
   local j=""
   for c in /usr/lib/jvm/java-25-openjdk-amd64/bin/java \
-           /usr/lib/jvm/java-21-openjdk-amd64/bin/java \
-           /usr/lib/jvm/openjdk-21/bin/java; do
+           /usr/lib/jvm/java-25-openjdk-amd64/bin/java \
+           /usr/lib/jvm/openjdk-25/bin/java; do
     [[ -x "$c" ]] && { j="$c"; break; }
   done
   [[ -z "$j" ]] && j="$(command -v java)"
-  [[ -z "$j" || ! -x "$j" ]] && err "Java 21+ not found. Install a JDK or set UPM_JAVA."
+  [[ -z "$j" || ! -x "$j" ]] && err "Java 25+ not found. Install a JDK or set UPM_JAVA."
   echo "$j"
 }
 

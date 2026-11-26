@@ -17,8 +17,8 @@ Vanilla JS + CSS variables, light/dark themes, sticky topbar SPA.
 | UPM | reference (unchanged) | n/a (unchanged) | `webServerEnabled`/`webServerAutoStart` in `config/application.jsonc` + Settings → Runtime tab | n/a (headless-only app) | jar built, smoke-tested ✓ |
 | EVO | done (EvoStyleManager + evo-style.css + 13 pages + view bundle + servers portal + cognitive/help) | light (UPM palette), dark tokens available | EMF `ServerSettings.enabled` (new) + `autoStart` (existing), port `ServerSettings.port`, bind address via NetworkInterfaceHelper | Server → Web Interface (Open/Open URL/Start/Stop/Restart/Status) | javac-verified (model/controller/view) ✓ |
 | ENR | done (style.css/index.html/app.js) | dark default + light + Theme toggle | `web_server.enabled` / `web_server.auto_start` in `enr.yaml` | n/a (server-only product) | `mvn compile` ✓ |
-| DCode | done (app.css/help.html/topbar + Theme toggle) | dark default + light + Theme toggle | `webServerEnabled`/`webServerAutoStart` in `~/.dcode/dcode-config.json` (port=`httpPort`, bind=`bindAddress`) | Web Interface menu + headless CLI `server-*` commands | Tycho compile ✓ |
-| DStudio | done (style.css/help.html/topbar + Theme toggle) | dark default + light + Theme toggle | `webServer.enabled`/`webServer.autoStart` in `~/.dstudio/dstudio.properties` (port=`teip.port`, bind=`teip.bindAddress`) | Web Interface menu | Tycho compile + test-compile ✓ |
+| EVO-Code | done (app.css/help.html/topbar + Theme toggle) | dark default + light + Theme toggle | `webServerEnabled`/`webServerAutoStart` in `~/.dcode/dcode-config.json` (port=`httpPort`, bind=`bindAddress`) | Web Interface menu + headless CLI `server-*` commands | Tycho compile ✓ |
+| EVO-Studio | done (style.css/help.html/topbar + Theme toggle) | dark default + light + Theme toggle | `webServer.enabled`/`webServer.autoStart` in `~/.dstudio/dstudio.properties` (port=`teip.port`, bind=`teip.bindAddress`) | Web Interface menu | Tycho compile + test-compile ✓ |
 | TRYST | done (embedded SPA CSS + help.html + Theme toggle) | light default + dark + Theme toggle | `webServer.enabled`/`webServer.autoStart` in `~/.tryst/tryst.properties` (port=`server.http.port`, bind=`server.bindAddress`) | Web menu (was empty) filled with lifecycle controls | Tycho compile ✓ |
 
 Screenshots: not capturable in this session (no headless-browser sandbox available on
@@ -37,7 +37,7 @@ migrated files and build verification.
 | API | `/api/state`, `/api/events` (SSE), `/api/ops`, `/api/projects`, `/api/settings`, `/api/graph`, … |
 | Status | **REFERENCE — no changes** |
 
-## 2. EVO — Evolution Platform (`evolution-121126`)
+## 2. EVO — Evolution Platform (`evolution-221126`)
 
 | Aspect | Value |
 |---|---|
@@ -49,7 +49,7 @@ migrated files and build verification.
 | Differences vs UPM | Palette, gradient buttons, uppercase panel headers, per-page duplicated nav, missing dark theme, inconsistent outliers |
 | Required changes | Align EvoStyleManager tokens/component CSS to UPM standard (keep `--evo-*` names as aliases); rewrite packaged `evo-style.css` identically; replace hardcoded palette values in page-inline CSS with token refs; unify `#evo-global-nav` into UPM topbar look (brand mark + nav pills + actions) in the injected CSS; align servers `css/style.css`, login/dashboard; align cognitive.html and view-bundle chat CSS modules to UPM tokens (dark theme allowed); align help.html |
 
-## 3. ENR — EVO Native Runtime (`evo-native-runtime-161126`)
+## 3. ENR — EVO Native Runtime (`enr-221126`)
 
 | Aspect | Value |
 |---|---|
@@ -61,7 +61,7 @@ migrated files and build verification.
 | Embedding | None (server + external browser) |
 | Required changes | Replace `style.css` token set with UPM tokens (light+dark), align components (topbar, panels, tables, buttons, toasts, progress), align `index.html` header to UPM topbar structure |
 
-## 4. DCode (`DCode-121126`)
+## 4. EVO-Code (`evo-code-221126`)
 
 | Aspect | Value |
 |---|---|
@@ -73,7 +73,7 @@ migrated files and build verification.
 | Embedding | Served from OSGi bundle; headless CLI; also opened in browsers |
 | Required changes | Replace token values with UPM light+dark sets (keep dark as default runtime theme, matching UPM); add UPM-style Theme toggle in `#topbar`; align buttons/panels/tables/badges/modals/context menus; add missing variable definitions used by JS inline styles (`--danger`, `--panel-2`, …); align `help.html` inline palette |
 
-## 5. DStudio (`DStudio-121126`)
+## 5. EVO-Studio (`evo-studio-221126`)
 
 | Aspect | Value |
 |---|---|
@@ -85,7 +85,7 @@ migrated files and build verification.
 | Embedding | Embedded browser served by the same backend (one authoritative core) |
 | Required changes | Replace token set with UPM light+dark (dark default), add Theme toggle in `#topbar`, align panels/tabs/buttons/toasts/ctx-menu, unify help.html palette |
 
-## 6. TRYST (`tryst-121126`)
+## 6. TRYST (`tryst-221126`)
 
 | Aspect | Value |
 |---|---|
@@ -98,7 +98,7 @@ migrated files and build verification.
 
 ## 7. Duplicates / dead files (documented, not migrated)
 
-- `evolution-121126/.../orchestration/forge2.html` == `forge3.html` (unreferenced)
+- `evolution-221126/.../orchestration/forge2.html` == `forge3.html` (unreferenced)
 - `.../orchestration/mcp.html` duplicated in `servers/mcp/demo/`
 - `template.html`, `genome.html` duplicated in `src/` and bundle root (root authoritative)
 - `view/chat2.html`, `view/chat3.html` orphaned prototypes (packaged only)
@@ -107,8 +107,8 @@ migrated files and build verification.
 ## 8. Migration priority
 
 1. **EVO** — largest visual distance, largest page count (14 live pages).
-2. **DCode** — dark-only divergence, big CSS + JS inline fallbacks.
-3. **DStudio** — small, quick win.
+2. **EVO-Code** — dark-only divergence, big CSS + JS inline fallbacks.
+3. **EVO-Studio** — small, quick win.
 4. **ENR** — small SPA.
 5. **TRYST** — inline Java SPA (highest edit risk), help page.
 

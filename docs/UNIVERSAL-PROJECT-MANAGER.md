@@ -4,7 +4,7 @@ A standalone, portable, minimalist application for managing software
 development projects: add, build, test, launch, monitor, stop — from one
 simple dashboard.
 
-The five Darwin projects (EVO, TRYST, DCode, DStudio, ENR) are the initial
+The five Darwin projects (EVO, TRYST, EVO-Code, EVO-Studio, ENR) are the initial
 demonstration workspace. They are **not** hardcoded dependencies: the
 application works with arbitrary Maven, Gradle, Eclipse RCP/Tycho/OSGi,
 executable-JAR, native CMake/C/C++, generic and custom projects.

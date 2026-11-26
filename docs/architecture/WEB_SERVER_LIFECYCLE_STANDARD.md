@@ -1,7 +1,7 @@
 # Web Server Lifecycle & Application Startup Modes — EVO Family Standard
 
 Standard for the three application startup modes and the web server lifecycle
-across the EVO family (EVO, ENR, DCode, DStudio, TRYST, UPM).
+across the EVO family (EVO, ENR, EVO-Code, EVO-Studio, TRYST, UPM).
 Visual standard: [UPM_WEB_UI_STANDARD.md](UPM_WEB_UI_STANDARD.md).
 Inventory: [EVO_WEB_UI_INVENTORY.md](EVO_WEB_UI_INVENTORY.md).
 
@@ -30,8 +30,8 @@ Persistent, application-level, in each app's existing configuration store:
 | UPM | `config/application.jsonc` | `webServerEnabled` (true), `webServerAutoStart` (true), port=`port`, bind=`host` |
 | EVO | EMF model (Server page of the settings editor) | `ServerSettings.enabled` (new EAttribute, default true), `ServerSettings.autoStart` (existing, default true), `ServerSettings.port` (28080), bind address via `NetworkInterfaceHelper` (`evo.network.mode`/`evo.network.bindAddress`) |
 | ENR | `enr.yaml` | `web_server.enabled` (true), `web_server.auto_start` (true), port=`server.port`, host=`server.host` |
-| DCode | `~/.dcode/dcode-config.json` | `webServerEnabled` (true), `webServerAutoStart` (true), port=`httpPort`, bind=`bindAddress` |
-| DStudio | `~/.dstudio/dstudio.properties` | `webServer.enabled` (true), `webServer.autoStart` (true), port=`teip.port`, bind=`teip.bindAddress` |
+| EVO-Code | `~/.dcode/dcode-config.json` | `webServerEnabled` (true), `webServerAutoStart` (true), port=`httpPort`, bind=`bindAddress` |
+| EVO-Studio | `~/.dstudio/dstudio.properties` | `webServer.enabled` (true), `webServer.autoStart` (true), port=`teip.port`, bind=`teip.bindAddress` |
 | TRYST | `~/.tryst/tryst.properties` | `webServer.enabled` (true), `webServer.autoStart` (true), port=`server.http.port`, bind=`server.bindAddress` |
 
 `webServer.port`/`webServer.bindAddress` reuse the existing authoritative port
@@ -56,8 +56,8 @@ Guarantees:
 - Start when `enabled=false` fails with a clear message; the state stays
   DISABLED.
 - Port conflicts follow the existing per-app allocation policy
-  (EVO `PortAvailabilityChecker`/FAILED state, DCode `PortAllocator` range,
-  TRYST dynamic range, DStudio `PortProbe`/`PortConflictException`).
+  (EVO `PortAvailabilityChecker`/FAILED state, EVO-Code `PortAllocator` range,
+  TRYST dynamic range, EVO-Studio `PortProbe`/`PortConflictException`).
 - The state is reflected in the RCP menu (items enable/disable per state)
   and in the web administration surfaces.
 
@@ -75,8 +75,8 @@ Each RCP application exposes a menu with:
 | App | Menu |
 |---|---|
 | EVO | Server → Web Interface (dynamic contribution, `ServerManager`-driven) |
-| DCode | Web Interface (dynamic contribution, `WebServerControl` OSGi service) |
-| DStudio | Web Interface (dynamic contribution, `DStudioLifecycleCoordinator`) |
+| EVO-Code | Web Interface (dynamic contribution, `WebServerControl` OSGi service) |
+| EVO-Studio | Web Interface (dynamic contribution, `DStudioLifecycleCoordinator`) |
 | TRYST | Web (existing empty menu filled; `ApplicationLifecycleCoordinator`) |
 
 All menu actions reuse the single existing server lifecycle service of the
@@ -85,11 +85,11 @@ application — no second server or lifecycle manager was created.
 ## 5. Headless control surfaces
 
 - EVO: headless `IApplication` honors the flags; CLI `/start /stop /restart /status /config`.
-- DCode: headless daemon honors the flags; new CLI commands
+- EVO-Code: headless daemon honors the flags; new CLI commands
   `server-start / server-stop / server-restart / server-status` drive the
   in-process `WebServerControl`; `start` now starts the local server when
   auto-start is off.
-- DStudio: dedicated headless application + `-headless` flag; CLI
+- EVO-Studio: dedicated headless application + `-headless` flag; CLI
   `start / restart / status / web`; `start` fails clearly when disabled.
 - TRYST: dedicated `TrystServerApplication` + `-headless` flag; both share
   the coordinator gate.
@@ -97,7 +97,7 @@ application — no second server or lifecycle manager was created.
 
 ## 6. Acceptance matrix
 
-| Test | UPM | EVO | ENR | DCode | DStudio | TRYST |
+| Test | UPM | EVO | ENR | EVO-Code | EVO-Studio | TRYST |
 |---|---|---|---|---|---|---|
 | Headless starts backend + web server by default | ✓ (smoke-tested) | ✓ (code path) | ✓ (default config) | ✓ | ✓ | ✓ |
 | Headless+Web usable without RCP | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |

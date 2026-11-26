@@ -8,7 +8,7 @@ web view "Ports" (`web/index.html`, `web/app.js`, `web/app.css`).
 ## 1. What it does
 
 The Port Manager is a read-only, centralized inventory of every known port of
-the EVO family (EVO, ENR, TRYST, DCode, DStudio, Ollama) plus a live check
+the EVO family (EVO, ENR, TRYST, EVO-Code, EVO-Studio, Ollama) plus a live check
 against actual system listeners.
 
 - **Inventory** — 33 entries (see table below), each with application, port,
@@ -96,21 +96,21 @@ ports) is unchanged. The workspace snapshot now also populates
 | TRYST | 38480 | WebSocket | implemented | WebSocket |
 | TRYST | 38580 | Auxiliary | implemented | HTTP |
 | TRYST | 38680 | Debug | implemented | HTTP |
-| DCode | 48080 | HTTP Server | implemented | HTTP |
-| DCode | 48081 | RCP Instance | proposed | HTTP |
-| DCode | 48180 | Reserved | proposed | HTTP |
-| DCode | 48280 | Reserved | proposed | TCP |
-| DCode | 48380 | Management | proposed | HTTP |
-| DCode | 48480 | Reserved | proposed | HTTP |
-| DCode | 48580 | Reserved | proposed | TCP |
-| DCode | 48680 | Auxiliary | proposed | HTTP |
-| DStudio | 58080 | HTTP Server | proposed | HTTP |
-| DStudio | 58180 | Secondary / API | proposed | HTTP |
-| DStudio | 58280 | Reserved | proposed | TCP |
-| DStudio | 58380 | Management | proposed | HTTP |
-| DStudio | 58480 | Reserved | proposed | HTTP |
-| DStudio | 58580 | Reserved | proposed | TCP |
-| DStudio | 58680 | Auxiliary | proposed | HTTP |
+| EVO-Code | 48080 | HTTP Server | implemented | HTTP |
+| EVO-Code | 48081 | RCP Instance | proposed | HTTP |
+| EVO-Code | 48180 | Reserved | proposed | HTTP |
+| EVO-Code | 48280 | Reserved | proposed | TCP |
+| EVO-Code | 48380 | Management | proposed | HTTP |
+| EVO-Code | 48480 | Reserved | proposed | HTTP |
+| EVO-Code | 48580 | Reserved | proposed | TCP |
+| EVO-Code | 48680 | Auxiliary | proposed | HTTP |
+| EVO-Studio | 58080 | HTTP Server | proposed | HTTP |
+| EVO-Studio | 58180 | Secondary / API | proposed | HTTP |
+| EVO-Studio | 58280 | Reserved | proposed | TCP |
+| EVO-Studio | 58380 | Management | proposed | HTTP |
+| EVO-Studio | 58480 | Reserved | proposed | HTTP |
+| EVO-Studio | 58580 | Reserved | proposed | TCP |
+| EVO-Studio | 58680 | Auxiliary | proposed | HTTP |
 | Ollama | 11434 | HTTP API | implemented | HTTP |
 
 ## 5. Verification results (2026-11-21, live system)
@@ -126,7 +126,7 @@ Verified against `ss -tlnp`, `/proc/net/tcp{,6}` and HTTP probes.
 | 28780 | READY | `~/.evo/ports.properties`: `ENR.port=28780, enabled=false` — historical |
 | 28880 | READY | proposed, not implemented anywhere |
 | 38080–38680 | READY | defaults verified in TRYST `ServicePortIdentifier`/`PortAllocationGroup` |
-| 48080 | **RUNNING** | DCode headless server, pid 2730506 (product `…dcode.server.headless…`) |
+| 48080 | **RUNNING** | EVO-Code headless server, pid 2730506 (product `…dcode.server.headless…`) |
 | 48081–48680 | READY | reserved/proposed; 48380 and 48680 exist as `DCodePorts.MANAGEMENT`/`AUX` constants |
 | 58080–58680 | READY | family plan block; see discrepancy D1 |
 | 11434 | **RUNNING** | Ollama, pid 6916, runs as user `ollama` (uid 997) — verified indirectly (name + UID match, see §1) |
@@ -136,15 +136,15 @@ No proposed or unimplemented service was reported as running.
 
 ## 6. Findings & discrepancies
 
-**D1 — DStudio port block conflict (48xxx vs 58xxx).**
-The current DStudio codebase still defaults to the legacy 48xxx block:
+**D1 — EVO-Studio port block conflict (48xxx vs 58xxx).**
+The current EVO-Studio codebase still defaults to the legacy 48xxx block:
 `DStudioConfiguration.DEFAULT_TEIP_PORT = 48080`, `DEFAULT_DIAGNOSTICS_PORT = 48180`,
-and the UPM workspace launch config for DStudio headless uses 48081. 48080 is
-owned by **DCode**, so DStudio's legacy defaults collide with a live DCode
+and the UPM workspace launch config for EVO-Studio headless uses 48081. 48080 is
+owned by **EVO-Code**, so EVO-Studio's legacy defaults collide with a live EVO-Code
 service. The 58xxx block documented in this inventory is the family plan;
-all DStudio 58xxx entries are therefore classified `proposed` until the code
-is migrated. (DStudio's harness sources also carry stale comments claiming
-"DCode owns 58xxx", contradicting `DCodePorts` which defines the 48xxx block —
+all EVO-Studio 58xxx entries are therefore classified `proposed` until the code
+is migrated. (EVO-Studio's harness sources also carry stale comments claiming
+"EVO-Code owns 58xxx", contradicting `DCodePorts` which defines the 48xxx block —
 those comments are wrong.)
 
 **D2 — EVO primary port 28080 is captured by a foreign process.**

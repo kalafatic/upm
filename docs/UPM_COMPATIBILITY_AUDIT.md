@@ -1,6 +1,6 @@
 # UPM Compatibility Audit
 
-Universal Project Manager (UPM) — audit of compatibility with the new parent/feature/build/launch/update structure of EVO, TRYST, DCode, DStudio, ENR.
+Universal Project Manager (UPM) — audit of compatibility with the new parent/feature/build/launch/update structure of EVO, TRYST, EVO-Code, EVO-Studio, ENR.
 
 ## Architecture overview (as audited)
 
@@ -21,8 +21,8 @@ Universal Project Manager (UPM) — audit of compatibility with the new parent/f
 
 | # | Old assumption | Compatibility problem | Correction |
 |---|---|---|---|
-| 1 | Tycho detection routed through the Maven adapter produced no product launches | EVO/TRYST/DCode/DStudio registered with **empty launch configs** | Maven adapter now delegates to the Tycho adapter for detection → product launches are proposed |
-| 2 | Built product launchers searched only 4 levels below `target/products` | Launchers live 5 levels deep (`…/products/<id>/<os>/<ws>/<arch>/<name>`); DStudio/TRYST/DCode launches were missed | Depth raised to 6 |
+| 1 | Tycho detection routed through the Maven adapter produced no product launches | EVO/TRYST/EVO-Code/EVO-Studio registered with **empty launch configs** | Maven adapter now delegates to the Tycho adapter for detection → product launches are proposed |
+| 2 | Built product launchers searched only 4 levels below `target/products` | Launchers live 5 levels deep (`…/products/<id>/<os>/<ws>/<arch>/<name>`); EVO-Studio/TRYST/EVO-Code launches were missed | Depth raised to 6 |
 | 3 | Product launcher name whitelist (`eclipse, evo, tryst, dcode, dstudio, …`) | EVO's `evolution` launcher (and future apps) not covered | Generic executable scan — no hardcoded application names |
 | 4 | JAR launches only from the repository-root `target/` | ENR CLI lives in `enr-cli/target/` | Module target dirs scanned for Main-Class JARs |
 | 5 | JAR launch configs executed directly via `setsid <jar>` | JARs are not executable — launch failed | `Proc.start` special-cases kind `jar`: `setsid <java> -jar <jar>`; java binary resolved from launch env (`{java25}`) |

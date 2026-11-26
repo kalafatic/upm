@@ -89,18 +89,15 @@ public final class Ports {
                 "HTTP", IMPLEMENTED, "127.0.0.1", "evolution"));
 
         // --------------------------------------------------------------- ENR
-        l.add(new Entry("ENR", 8111, "HTTP Server",
-                "ENR (EVO Native Runtime) HTTP API. Verified in enr.yaml and "
-                        + "RuntimeConfig (default port 8111): model discovery, inference "
-                        + "and orchestration requests under /api/v1.",
-                "HTTP", IMPLEMENTED, "127.0.0.1", "enr"));
         l.add(new Entry("ENR", 28780, "HTTP Server",
-                "Previously configured ENR HTTP endpoint (EVO ports.properties "
-                        + "ENR.port=28780, enabled=false). Historical legacy assignment.",
-                "HTTP", HISTORICAL, "127.0.0.1", "enr"));
-        l.add(new Entry("ENR", 28880, "Proposed HTTP",
-                "Recommended dedicated ENR endpoint; not yet confirmed as implemented.",
-                "HTTP", PROPOSED, "127.0.0.1", "enr"));
+                "ENR (EVO Native Runtime) HTTP API — authoritative port 28780: "
+                        + "model discovery, inference and orchestration under /api/v1, "
+                        + "/enr/v1, /v1 and /api.",
+                "HTTP", IMPLEMENTED, "127.0.0.1", "enr"));
+        l.add(new Entry("ENR_WEB", 28880, "HTTP Server",
+                "ENR Web Control Center — independent listener (authoritative 28880) "
+                        + "serving the browser UI; communicates with the ENR API at 28780.",
+                "HTTP", IMPLEMENTED, "127.0.0.1", "enr"));
 
         // ------------------------------------------------------------ TRYST 38xxx
         l.add(new Entry("TRYST", 38080, "HTTP Server",
@@ -126,61 +123,61 @@ public final class Ports {
                 "Development and diagnostic endpoint.",
                 "HTTP", IMPLEMENTED, "127.0.0.1", "tryst"));
 
-        // ------------------------------------------------------------- DCode 48xxx
-        l.add(new Entry("DCode", 48080, "HTTP Server",
-                "Main DCode web interface and HTTP services (REST + SSE + web UI). "
+        // --------------------------------------------------------- EVO-Code 48xxx
+        l.add(new Entry("EVO-Code", 48080, "HTTP Server",
+                "Main EVO-Code web interface and HTTP services (REST + SSE + web UI). "
                         + "Verified in DCodePorts.HTTP and currently the default endpoint.",
                 "HTTP", IMPLEMENTED, "127.0.0.1", "dcode"));
-        l.add(new Entry("DCode", 48081, "RCP Instance",
+        l.add(new Entry("EVO-Code", 48081, "RCP Instance",
                 "Proposed local RCP instance communication endpoint; verify implementation. "
-                        + "NOTE: DStudio currently uses 48081 for its legacy headless TEIP "
-                        + "server — see the DStudio discrepancy notes.",
+                        + "NOTE: EVO-Studio currently uses 48081 for its legacy headless TEIP "
+                        + "server — see the EVO-Studio discrepancy notes.",
                 "HTTP", PROPOSED, "127.0.0.1", "dcode"));
-        l.add(new Entry("DCode", 48180, "Reserved",
-                "Reserved for future DCode secondary services.",
+        l.add(new Entry("EVO-Code", 48180, "Reserved",
+                "Reserved for future EVO-Code secondary services.",
                 "HTTP", PROPOSED, "127.0.0.1", "dcode"));
-        l.add(new Entry("DCode", 48280, "Reserved",
-                "Reserved for future DCode communication services.",
+        l.add(new Entry("EVO-Code", 48280, "Reserved",
+                "Reserved for future EVO-Code communication services.",
                 "TCP", PROPOSED, "127.0.0.1", "dcode"));
-        l.add(new Entry("DCode", 48380, "Management",
+        l.add(new Entry("EVO-Code", 48380, "Management",
                 "Proposed administrative and monitoring endpoint (defined as "
                         + "DCodePorts.MANAGEMENT; no live listener observed yet).",
                 "HTTP", PROPOSED, "127.0.0.1", "dcode"));
-        l.add(new Entry("DCode", 48480, "Reserved",
-                "Reserved for future DCode services.",
+        l.add(new Entry("EVO-Code", 48480, "Reserved",
+                "Reserved for future EVO-Code services.",
                 "HTTP", PROPOSED, "127.0.0.1", "dcode"));
-        l.add(new Entry("DCode", 48580, "Reserved",
-                "Reserved for future DCode services.",
+        l.add(new Entry("EVO-Code", 48580, "Reserved",
+                "Reserved for future EVO-Code services.",
                 "TCP", PROPOSED, "127.0.0.1", "dcode"));
-        l.add(new Entry("DCode", 48680, "Auxiliary",
+        l.add(new Entry("EVO-Code", 48680, "Auxiliary",
                 "Proposed auxiliary service endpoint (defined as DCodePorts.AUX; "
                         + "no live listener observed yet).",
                 "HTTP", PROPOSED, "127.0.0.1", "dcode"));
 
-        // ----------------------------------------------------------- DStudio 58xxx
-        l.add(new Entry("DStudio", 58080, "HTTP Server",
-                "Main DStudio web interface and HTTP services (TEIP HTTP protocol). "
-                        + "Family port plan: the DStudio codebase still defaults to the "
-                        + "legacy 48xxx block (48080/48180), which collides with DCode; "
+        // --------------------------------------------------------- EVO-Studio 58xxx
+        l.add(new Entry("EVO-Studio", 58080, "HTTP Server",
+                "Main EVO-Studio web interface and HTTP services (TEIP HTTP protocol). "
+                        + "Family port plan: the EVO-Studio codebase still defaults to the "
+                        + "legacy 48xxx block (48080/48180), which collides with EVO-Code; "
                         + "58xxx is the planned authoritative home.",
                 "HTTP", PROPOSED, "127.0.0.1", "dstudio"));
-        l.add(new Entry("DStudio", 58180, "Secondary / API",
+        l.add(new Entry("EVO-Studio", 58180, "Secondary / API",
                 "Secondary application API and web communication endpoint (planned; "
                         + "currently implemented as diagnostics on legacy 48180).",
                 "HTTP", PROPOSED, "127.0.0.1", "dstudio"));
-        l.add(new Entry("DStudio", 58280, "Reserved",
-                "Reserved for future DStudio communication services.",
+        l.add(new Entry("EVO-Studio", 58280, "Reserved",
+                "Reserved for future EVO-Studio communication services.",
                 "TCP", PROPOSED, "127.0.0.1", "dstudio"));
-        l.add(new Entry("DStudio", 58380, "Management",
+        l.add(new Entry("EVO-Studio", 58380, "Management",
                 "Proposed administrative and monitoring endpoint.",
                 "HTTP", PROPOSED, "127.0.0.1", "dstudio"));
-        l.add(new Entry("DStudio", 58480, "Reserved",
-                "Reserved for future DStudio services.",
+        l.add(new Entry("EVO-Studio", 58480, "Reserved",
+                "Reserved for future EVO-Studio services.",
                 "HTTP", PROPOSED, "127.0.0.1", "dstudio"));
-        l.add(new Entry("DStudio", 58580, "Reserved",
-                "Reserved for future DStudio services.",
+        l.add(new Entry("EVO-Studio", 58580, "Reserved",
+                "Reserved for future EVO-Studio services.",
                 "TCP", PROPOSED, "127.0.0.1", "dstudio"));
-        l.add(new Entry("DStudio", 58680, "Auxiliary",
+        l.add(new Entry("EVO-Studio", 58680, "Auxiliary",
                 "Proposed auxiliary service endpoint.",
                 "HTTP", PROPOSED, "127.0.0.1", "dstudio"));
 

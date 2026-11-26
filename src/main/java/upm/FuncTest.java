@@ -828,7 +828,7 @@ public final class FuncTest {
     private static String enrBase(Config.Project p) {
         String base = p.apiBase;
         if (base == null || base.isBlank()) {
-            base = "http://127.0.0.1:8111/api/v1";
+            base = "http://127.0.0.1:28780/api/v1";
         }
         while (base.endsWith("/")) {
             base = base.substring(0, base.length() - 1);

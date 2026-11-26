@@ -20,7 +20,7 @@ class FuncTestTest {
             boolean enrMonitor, List<Config.LaunchConfig> lcs) {
         return new Config.Project(id, name, "", "/tmp/" + id, "", type, "USER_CONFIRMED",
                 "test", List.of(), Map.of(), List.of(), List.of(), List.of(), List.of(),
-                enrMonitor ? "http://127.0.0.1:8111/api/v1" : "", enrMonitor, List.of(),
+                enrMonitor ? "http://127.0.0.1:28780/api/v1" : "", enrMonitor, List.of(),
                 Map.of(), List.of(), false, lcs);
     }
 

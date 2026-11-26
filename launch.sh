@@ -23,17 +23,17 @@ fail() {
   exit 1
 }
 
-# 1. Locate a JDK 21+ (configurable, detected at runtime — no hardcoded paths).
+# 1. Locate a JDK 25+ (configurable, detected at runtime — no hardcoded paths).
 if [[ -z "$JAVA_BIN" ]]; then
-  for candidate in /usr/lib/jvm/java-21-openjdk-amd64/bin/java \
+  for candidate in /usr/lib/jvm/java-25-openjdk-amd64/bin/java \
                   /usr/lib/jvm/java-25-openjdk-amd64/bin/java \
-                  /usr/lib/jvm/openjdk-21/bin/java; do
+                  /usr/lib/jvm/openjdk-25/bin/java; do
     [[ -x "$candidate" ]] && JAVA_BIN="$candidate" && break
   done
   [[ -z "$JAVA_BIN" ]] && JAVA_BIN="$(command -v java)"
 fi
 if [[ -z "$JAVA_BIN" || ! -x "$JAVA_BIN" ]]; then
-  fail "Java 21+ not found. Install a JDK or set UPM_JAVA."
+  fail "Java 25+ not found. Install a JDK or set UPM_JAVA."
 fi
 
 if [[ ! -f "$JAR" ]]; then

@@ -10,7 +10,7 @@ VERSION="2.6.11"
 
 APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CONFIG="${UPM_CONFIG:-$APP_DIR/config/application.jsonc}"
-JAVA_BIN="${UPM_JAVA:-/usr/lib/jvm/java-21-openjdk-amd64/bin/java}"
+JAVA_BIN="${UPM_JAVA:-/usr/lib/jvm/java-25-openjdk-amd64/bin/java}"
 JAR="$APP_DIR/universal-project-manager.jar"
 LOG_FILE="$APP_DIR/logs/upm.log"
 API=""

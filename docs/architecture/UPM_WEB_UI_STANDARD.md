@@ -4,7 +4,7 @@
 (`index.html`, `app.css`, `app.js`, `charts.js`, `graph.js`).
 
 This document is the design standard for every web interface of the EVO family
-(EVO, ENR, DCode, DStudio, TRYST, UPM itself). It is extracted from the UPM
+(EVO, ENR, EVO-Code, EVO-Studio, TRYST, UPM itself). It is extracted from the UPM
 implementation — it does not invent a new design system. UPM is the benchmark;
 when in doubt, look at the UPM sources, not at this document.
 
@@ -399,9 +399,9 @@ No dead buttons: every rendered button performs an action or is disabled.
 - **UPM** — the reference; do not redesign.
 - **EVO** — keeps its workstation layout (chat, forge canvas, develop diff),
   adopts these tokens, header/nav, buttons, tables, badges, dialogs, toasts.
-- **DCode** — keeps the IDE shell (explorer/editor/console), adopts tokens,
+- **EVO-Code** — keeps the IDE shell (explorer/editor/console), adopts tokens,
   both themes, UPM-style topbar chrome and dialogs.
-- **DStudio** — keeps the Web IDE layout, adopts tokens, both themes.
+- **EVO-Studio** — keeps the Web IDE layout, adopts tokens, both themes.
 - **ENR** — keeps the control-center pages, adopts tokens, both themes.
 - **TRYST** — keeps admin/review/studio pages, adopts tokens, both themes.
 
