@@ -562,4 +562,268 @@ public final class Ports {
         }
         return map;
     }
+
+    // ========================================================= browser endpoint
+
+    /** Returns the http(s) URL for a known HTTP/HTTPS port, or null otherwise. */
+    public static String browserUrl(int port) {
+        Entry e = entryByPort(port);
+        if (e == null) {
+            return null;
+        }
+        return browserUrl(e);
+    }
+
+    /** Returns the http(s) URL for an inventory entry, or null for non-HTTP(S). */
+    public static String browserUrl(Entry e) {
+        if (e == null) {
+            return null;
+        }
+        String scheme = schemeFor(e.protocol);
+        if (scheme == null) {
+            return null;
+        }
+        return scheme + "://" + normalizeHost(e.binding) + ":" + e.port;
+    }
+
+    /** Looks up the inventory entry for a port (null when unknown). */
+    public static Entry entryByPort(int port) {
+        for (Entry e : INVENTORY) {
+            if (e.port == port) {
+                return e;
+            }
+        }
+        return null;
+    }
+
+    /** Maps an inventory protocol to a browser scheme; null for non-HTTP(S). */
+    static String schemeFor(String protocol) {
+        if (protocol == null) {
+            return null;
+        }
+        String p = protocol.trim().toLowerCase(Locale.ROOT);
+        if ("https".equals(p)) {
+            return "https";
+        }
+        if ("http".equals(p)) {
+            return "http";
+        }
+        return null;
+    }
+
+    /** Normalizes a binding address to a URL host (wildcards → loopback). */
+    static String normalizeHost(String host) {
+        if (host == null || host.isBlank()) {
+            return "127.0.0.1";
+        }
+        String h = host.trim();
+        if (h.startsWith("[")) {
+            return h;
+        }
+        if ("0.0.0.0".equals(h) || "*".equals(h) || "::".equals(h)
+                || "0:0:0:0:0:0:0:0".equals(h)) {
+            return "127.0.0.1";
+        }
+        if (h.contains(":") && !h.contains(".")) {
+            return "[" + h + "]";
+        }
+        return h;
+    }
+
+    // ============================================================ process info
+
+    /** Detailed owner(s) of the process(es) listening on a port. */
+    public static Map<String, Object> processInfo(int port) {
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("port", port);
+        List<Listener> listeners = new ArrayList<>();
+        for (Listener l : readListeners()) {
+            if (l.port() == port) {
+                listeners.add(l);
+            }
+        }
+        Map<String, Long> inodeOwners = resolveInodeOwners();
+        List<Map<String, Object>> owners = new ArrayList<>();
+        java.util.Set<Long> seen = new java.util.LinkedHashSet<>();
+        for (Listener l : listeners) {
+            Long pid = inodeOwners.get(l.inode());
+            if (pid == null || !seen.add(pid)) {
+                continue;
+            }
+            Map<String, Object> o = new LinkedHashMap<>();
+            o.put("pid", pid);
+            o.put("port", port);
+            o.put("protocol", "TCP");
+            o.put("address", l.address());
+            o.put("uid", l.uid());
+            o.put("name", processName(pid));
+            o.put("exe", processExe(pid));
+            o.put("cmd", readCmdline(pid));
+            o.put("ppid", processPpid(pid));
+            o.put("user", userName(l.uid()));
+            String prot = protectedReason(pid);
+            o.put("protected", prot != null);
+            o.put("protectedReason", prot);
+            owners.add(o);
+        }
+        out.put("listening", !listeners.isEmpty());
+        out.put("ownerCount", owners.size());
+        out.put("owners", owners);
+        return out;
+    }
+
+    /** True when no socket is listening on the port. */
+    public static boolean isPortFree(int port) {
+        for (Listener l : readListeners()) {
+            if (l.port() == port) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    static String processName(long pid) {
+        try {
+            for (String line : Files.readAllLines(Path.of("/proc", String.valueOf(pid), "status"))) {
+                if (line.startsWith("Name:")) {
+                    return line.substring("Name:".length()).trim();
+                }
+            }
+        } catch (IOException ignored) {
+            // process gone
+        }
+        return null;
+    }
+
+    static String processExe(long pid) {
+        try {
+            return Files.readSymbolicLink(Path.of("/proc", String.valueOf(pid), "exe")).toString();
+        } catch (IOException e) {
+            return null;
+        }
+    }
+
+    static long processPpid(long pid) {
+        try {
+            String stat = Files.readString(Path.of("/proc", String.valueOf(pid), "stat"));
+            int close = stat.lastIndexOf(')');
+            String[] fields = stat.substring(close + 2).split(" ");
+            return fields.length > 1 ? Long.parseLong(fields[1]) : -1;
+        } catch (IOException | NumberFormatException e) {
+            return -1;
+        }
+    }
+
+    static long processUid(long pid) {
+        try {
+            for (String line : Files.readAllLines(Path.of("/proc", String.valueOf(pid), "status"))) {
+                if (line.startsWith("Uid:")) {
+                    String[] f = line.trim().split("\\s+");
+                    if (f.length >= 2) {
+                        return Long.parseLong(f[1]);
+                    }
+                }
+            }
+        } catch (IOException | NumberFormatException ignored) {
+            // process gone
+        }
+        return -1;
+    }
+
+    static String userName(long uid) {
+        if (uid < 0) {
+            return "?";
+        }
+        try {
+            for (String line : Files.readAllLines(Path.of("/etc/passwd"))) {
+                String[] f = line.split(":");
+                if (f.length > 2 && String.valueOf(uid).equals(f[2])) {
+                    return f[0];
+                }
+            }
+        } catch (IOException ignored) {
+            // /etc/passwd unavailable
+        }
+        return String.valueOf(uid);
+    }
+
+    /** Returns a human reason when a process must not be terminated, else null. */
+    public static String protectedReason(long pid) {
+        if (pid <= 0) {
+            return "Invalid PID";
+        }
+        if (pid == 1) {
+            return "PID 1 is the init/systemd process (critical OS process).";
+        }
+        if (pid == Main.selfPid || pid == ProcessHandle.current().pid()) {
+            return "This is the UPM process itself.";
+        }
+        ProcessHandle cur = ProcessHandle.current();
+        var anc = cur.parent();
+        int depth = 0;
+        while (anc.isPresent() && depth < 8) {
+            if (anc.get().pid() == pid) {
+                return "This is an ancestor of the UPM process (the host/launcher).";
+            }
+            anc = anc.get().parent();
+            depth++;
+        }
+        if (processUid(pid) == 0) {
+            return "Process is owned by root; UPM does not escalate privileges.";
+        }
+        return null;
+    }
+
+    /**
+     * Terminates exactly one process. Graceful (SIGTERM) unless {@code force}
+     * (SIGKILL). Never signals anything but the given PID and never widens the
+     * scope. Returns a structured result.
+     */
+    public static Map<String, Object> terminateProcess(long pid, boolean force) {
+        Map<String, Object> r = new LinkedHashMap<>();
+        r.put("pid", pid);
+        r.put("force", force);
+        String prot = protectedReason(pid);
+        if (prot != null) {
+            r.put("result", "TERMINATION_NOT_ALLOWED");
+            r.put("message", prot);
+            return r;
+        }
+        var handle = ProcessHandle.of(pid);
+        if (handle.isEmpty() || !handle.get().isAlive()) {
+            r.put("result", "PROCESS_ALREADY_EXITED");
+            r.put("message", "Process " + pid + " is not running.");
+            return r;
+        }
+        if (force) {
+            handle.get().destroyForcibly();
+        } else {
+            handle.get().destroy();
+        }
+        long timeoutMs = force ? 3000L : 5000L;
+        long deadline = System.currentTimeMillis() + timeoutMs;
+        boolean exited = false;
+        while (System.currentTimeMillis() < deadline) {
+            if (!handle.get().isAlive()) {
+                exited = true;
+                break;
+            }
+            try {
+                Thread.sleep(200L);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
+            }
+        }
+        r.put("exited", exited);
+        r.put("alive", handle.get().isAlive());
+        if (exited) {
+            r.put("result", "PROCESS_TERMINATED");
+        } else if (force) {
+            r.put("result", "TERMINATION_FAILED");
+        } else {
+            r.put("result", "STILL_RUNNING");
+        }
+        return r;
+    }
 }

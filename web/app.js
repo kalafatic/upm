@@ -891,12 +891,21 @@ function projectActions(p) {
   const test = el("button", "btn", "Test");
   test.onclick = () => startOp("test", p.id).then(() => toast("info", p.id, "Tests started"))
     .catch((e) => toast("error", p.id, e.message));
+  const hasExport = (p.operations || []).includes("exportProduct");
+  let exportBtn = null;
+  if (hasExport) {
+    exportBtn = el("button", "btn", "Export product");
+    exportBtn.title = "Export the executable Eclipse product (target/products)";
+    exportBtn.onclick = () => startOp("exportProduct", p.id)
+      .then((r) => toast("info", p.id, "Export Product started (op #" + r.opId + ")"))
+      .catch((e) => toast("error", p.id, e.message));
+  }
   const edit = el("button", "btn", "Edit");
   edit.onclick = () => openEditProject(p.id);
   const dup = el("button", "btn", "Duplicate");
   dup.onclick = () => openDuplicateProject(p.id);
   const more = el("button", "btn", "More ▾");
-  d.append(build, test, edit, dup, more);
+  d.append(...[build, test, exportBtn, edit, dup, more].filter(Boolean));
   const menu = buildContextMenu(more, p);
   return d;
 }
@@ -989,7 +998,8 @@ function renderOverviewTab(p, body) {
       "<td class='mono'>" + esc(lc.kind) + "</td>" +
       "<td>" + (lc.launcherExists ? '<span class="ok-text">built</span>' : '<span class="warn-text">not built</span>') + "</td>" +
       '<td><button class="btn btn-sm" data-act="run-lc" data-p="' + p.id + '" data-lc="' + lc.id + '">Run</button> ' +
-      '<button class="btn btn-sm" data-act="ftest-lc" data-p="' + p.id + '" data-lc="' + lc.id + '">Test</button></td>';
+      '<button class="btn btn-sm" data-act="ftest-lc" data-p="' + p.id + '" data-lc="' + lc.id + '">Test</button>' +
+      (lc.kind === "eclipse-product" ? ' <button class="btn btn-sm" data-act="export" data-p="' + p.id + '">Export</button>' : '') + '</td>';
     tb.appendChild(tr);
   }
   t.appendChild(tb);
@@ -1208,6 +1218,7 @@ function renderLaunchTab(p, body) {
       "<td>" + (lc.launcherExists ? '<span class="ok-text">ready</span>' : '<span class="warn-text">not built</span>') + "</td>" +
       '<td><button class="btn btn-sm" data-act="run-lc" data-p="' + p.id + '" data-lc="' + lc.id + '">Run</button> ' +
       '<button class="btn btn-sm" data-act="ftest-lc" data-p="' + p.id + '" data-lc="' + lc.id + '">Test</button> ' +
+      (lc.kind === "eclipse-product" ? '<button class="btn btn-sm" data-act="export" data-p="' + p.id + '">Export</button> ' : '') +
       '<button class="btn btn-sm" data-act="edit-lc" data-p="' + p.id + '" data-lc="' + lc.id + '">Edit</button> ' +
       '<button class="btn btn-sm" data-act="dup-lc" data-p="' + p.id + '" data-lc="' + lc.id + '">Duplicate</button> ' +
       '<button class="btn btn-sm" data-act="def-lc" data-p="' + p.id + '" data-lc="' + lc.id + '">Default</button> ' +
@@ -2719,6 +2730,9 @@ document.addEventListener("click", (e) => {
     } else if (a === "run-lc") {
       startOp("run", p, lc).then((r) => toast("info", p, "Run " + lc + " started (op #" + r.opId + ")"))
         .catch((er) => toast("error", p, er.message));
+    } else if (a === "export") {
+      startOp("exportProduct", p).then((r) => toast("info", p, "Export Product started (op #" + r.opId + ")"))
+        .catch((er) => toast("error", p, er.message));
     } else if (a === "ftest") {
       openFTestChooser(p);
     } else if (a === "ftest-lc") {
@@ -3317,6 +3331,7 @@ function renderPortsTable() {
       tb.appendChild(grp);
     }
     const tr = el("tr", e.kind !== "implemented" ? "pm-dim" : "");
+    tr.dataset.port = e.port;
     const kindTag = e.kind === "implemented"
       ? "" : ' <span class="tag pm-kind-' + esc(e.kind) + '">' + esc(e.kind) + "</span>";
     const title = esc(e.description) +
@@ -3362,6 +3377,237 @@ function initPortsControls() {
     const pr = e.target.closest("[data-port-refresh]");
     if (pr) recheckPort(Number(pr.dataset.portRefresh));
   });
+  $("#ports-table").addEventListener("contextmenu", (e) => portTableContextMenu(e));
+  $("#ports-table").addEventListener("dblclick", (e) => portTableDoubleClick(e));
+}
+
+// ---- Port table actions: Open in Browser / Inspect / Kill -----------------
+
+function portEntry(port) {
+  return ((portsData && portsData.entries) || []).find((e) => Number(e.port) === Number(port)) || null;
+}
+
+function portRowFromEvent(ev) {
+  const tr = ev.target.closest("tbody tr");
+  if (!tr || tr.classList.contains("pm-group") || !tr.dataset.port) return null;
+  return portEntry(Number(tr.dataset.port));
+}
+
+function portEndpointUrl(e) {
+  const p = (e.protocol || "").toLowerCase();
+  const scheme = p === "https" ? "https" : p === "http" ? "http" : null;
+  if (!scheme) return null;
+  let host = (e.binding || "127.0.0.1").trim();
+  if (!host || host === "0.0.0.0" || host === "*" || host === "::" || host === "0:0:0:0:0:0:0:0") {
+    host = "127.0.0.1";
+  } else if (host.includes(":") && !host.includes(".")) {
+    host = "[" + host + "]";
+  }
+  return scheme + "://" + host + ":" + e.port;
+}
+
+async function openPortInBrowser(port) {
+  const e = portEntry(port);
+  const url = e ? portEndpointUrl(e) : null;
+  if (!url) {
+    toast("error", "Open in Browser", "Port " + port + " is not an HTTP/HTTPS endpoint.");
+    return;
+  }
+  try {
+    const r = await api("/api/ports/open", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ port }),
+    });
+    toast("info", "Open in Browser", (r.url || url) + " — opened in the default browser");
+  } catch (err) {
+    // Fallback: open in the current browser.
+    window.open(url, "_blank");
+    toast("info", "Open in Browser", url);
+  }
+}
+
+function copyText(text) {
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text)
+      .then(() => toast("info", "Copied", text))
+      .catch(() => toast("info", "Copy", text));
+  } else {
+    toast("info", "Copy", text);
+  }
+}
+
+function portTableDoubleClick(ev) {
+  const e = portRowFromEvent(ev);
+  if (!e) return;
+  if (portEndpointUrl(e)) openPortInBrowser(e.port);
+}
+
+let portMenuEl = null;
+function closePortMenu() {
+  if (portMenuEl) { portMenuEl.remove(); portMenuEl = null; }
+}
+
+function portTableContextMenu(ev) {
+  const e = portRowFromEvent(ev);
+  if (!e) return;
+  ev.preventDefault();
+  closePortMenu();
+  const httpOk = !!portEndpointUrl(e);
+  const menu = el("div", "ctx-menu");
+  menu.style.cssText = "position:fixed;z-index:600;background:var(--panel2);border:1px solid var(--border);border-radius:6px;padding:4px;min-width:230px;box-shadow:0 6px 20px rgba(0,0,0,.35)";
+  const items = [
+    ["Open in Browser", () => openPortInBrowser(e.port), httpOk],
+    ["Copy Endpoint", () => copyText(portEndpointUrl(e) || ""), httpOk],
+    ["Copy Port", () => copyText(String(e.port)), true],
+    ["Refresh Port Status", () => recheckPort(e.port), true],
+    separator(),
+    ["Inspect Process", () => inspectPortProcess(e.port), true],
+    ["Kill Process Using Port", () => killPortProcessFromPort(e.port), e.status !== "READY"],
+  ];
+  for (const [label, fn, enabled] of items) {
+    if (label === separator()) { menu.appendChild(el("div", "ctx-sep")); continue; }
+    const b = el("button", "btn btn-sm", label);
+    b.style.cssText = "display:block;width:100%;text-align:left;background:transparent;border:none;padding:6px 10px;"
+      + "cursor:" + (enabled ? "pointer" : "default") + (enabled ? "" : ";opacity:.45");
+    if (!enabled) {
+      b.disabled = true;
+    } else {
+      b.onclick = (ev2) => { ev2.stopPropagation(); closePortMenu(); fn(); };
+    }
+    menu.appendChild(b);
+  }
+  document.body.appendChild(menu);
+  menu.style.left = Math.min(ev.clientX, window.innerWidth - 250) + "px";
+  menu.style.top = Math.min(ev.clientY, window.innerHeight - 230) + "px";
+  portMenuEl = menu;
+  setTimeout(() => document.addEventListener("click", () => closePortMenu(), { once: true }), 0);
+}
+
+function separator() { return "---"; }
+
+async function inspectPortProcess(port) {
+  openModal("Process on port " + port, '<div id="port-proc"><p class="muted">Inspecting…</p></div>');
+  try {
+    const info = await api("/api/ports/process?port=" + port);
+    const box = $("#port-proc");
+    box.innerHTML = "";
+    const owners = info.owners || [];
+    if (!owners.length) {
+      box.appendChild(el("p", "muted", "No process is listening on port " + port + "."));
+      return;
+    }
+    for (const o of owners) {
+      const kv = el("div", "kv");
+      const row = (k, v) => {
+        kv.appendChild(el("div", "k", esc(k)));
+        kv.appendChild(el("div", "v", esc(v == null || v === "" ? "—" : String(v))));
+      };
+      row("Port", info.port);
+      row("Protocol", o.protocol);
+      row("PID", o.pid);
+      row("Process", o.name);
+      row("Executable", o.exe);
+      row("User", o.user);
+      row("Parent PID", o.ppid);
+      row("Address", o.address);
+      row("Command", o.cmd);
+      box.appendChild(kv);
+      if (o.protected) box.appendChild(el("p", "warn-text", "Protected — " + o.protectedReason));
+    }
+    const target = owners.find((o) => !o.protected && o.pid);
+    if (target) {
+      const btn = el("button", "btn btn-danger", "Kill Process Using Port");
+      btn.onclick = () => { closeModal(); killPortProcess(port, target); };
+      $("#modal-actions").appendChild(btn);
+    }
+  } catch (err) {
+    $("#port-proc").innerHTML = '<p class="err-text">' + esc(err.message) + "</p>";
+  }
+}
+
+async function killPortProcessFromPort(port) {
+  try {
+    const info = await api("/api/ports/process?port=" + port);
+    const owners = info.owners || [];
+    if (!owners.length) {
+      toast("info", "No process", "No process is listening on port " + port + ".");
+      return;
+    }
+    const target = owners.find((o) => !o.protected && o.pid);
+    if (!target) {
+      toast("error", "Termination not allowed", owners[0].protectedReason || "This process is protected.");
+      return;
+    }
+    killPortProcess(port, target);
+  } catch (err) {
+    toast("error", "Inspect failed", err.message);
+  }
+}
+
+function killPortProcess(port, owner) {
+  const body = "<p class='warn-text'>Terminating a process may interrupt another application. Continue?</p>" +
+    "<div class='kv'>" +
+    "<div class='k'>Port</div><div class='v'>" + esc(port) + "</div>" +
+    "<div class='k'>Protocol</div><div class='v'>" + esc(owner.protocol || "TCP") + "</div>" +
+    "<div class='k'>PID</div><div class='v'>" + esc(owner.pid) + "</div>" +
+    "<div class='k'>Process</div><div class='v'>" + esc(owner.name || "—") + "</div>" +
+    "<div class='k'>Executable</div><div class='v'>" + esc(owner.exe || "—") + "</div>" +
+    "<div class='k'>User</div><div class='v'>" + esc(owner.user || "—") + "</div>" +
+    "<div class='k'>Command</div><div class='v'>" + esc(owner.cmd || "—") + "</div>" +
+    "</div>";
+  confirmDialog("Terminate Process Using Port?", body, async () => {
+    try {
+      const r = await api("/api/ports/kill", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ port, pid: owner.pid, force: false }),
+      });
+      handleKillResult(port, owner, r);
+    } catch (err) {
+      toast("error", "Termination failed", err.message);
+    }
+  });
+}
+
+async function forceKillPortProcess(port, owner) {
+  try {
+    const r = await api("/api/ports/kill", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ port, pid: owner.pid, force: true }),
+    });
+    handleKillResult(port, owner, r);
+  } catch (err) {
+    toast("error", "Force termination failed", err.message);
+  }
+}
+
+function handleKillResult(port, owner, r) {
+  const result = String(r.result || "");
+  if (result === "PROCESS_TERMINATED_PORT_AVAILABLE" || result === "PROCESS_TERMINATED") {
+    toast("success", "Process terminated", "Port " + port + " is now available.");
+    refreshPorts(true);
+  } else if (result === "PROCESS_TERMINATED_PORT_STILL_OCCUPIED") {
+    toast("warn", "Process terminated", "Port " + port + " is still occupied by another process.");
+    refreshPorts(true);
+  } else if (result === "STILL_RUNNING") {
+    confirmDialog("Process did not exit",
+      "<p>PID " + esc(owner.pid) + " (" + esc(owner.name || "process") + ") is still running after a graceful "
+        + "termination request.</p><p class='warn-text'>Force kill (SIGKILL) this exact PID?</p>",
+      () => forceKillPortProcess(port, owner));
+  } else if (result === "TERMINATION_NOT_ALLOWED") {
+    toast("error", "Termination not allowed", r.message || "This process is protected.");
+  } else if (result === "PROCESS_ALREADY_EXITED") {
+    toast("info", "Process already exited",
+      "Port " + port + " is " + (r.portAvailable ? "now available." : "still occupied."));
+    refreshPorts(true);
+  } else if (result === "TERMINATION_FAILED") {
+    toast("error", "Termination failed", "PID " + esc(owner.pid) + " could not be terminated.");
+  } else if (result === "OWNERSHIP_CHANGED") {
+    toast("warn", "Ownership changed", r.message || "The process no longer owns the port.");
+    refreshPorts(true);
+  } else {
+    toast("warn", "Termination", result || "Unknown result.");
+    refreshPorts(true);
+  }
 }
 
 // ================================================================ DISCOVERY

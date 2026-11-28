@@ -269,6 +269,11 @@ public final class Proc {
 
         long deadline = System.currentTimeMillis() + lc.startupTimeoutMs;
         Pattern marker = buildMarker(lc);
+        // A GUI (RCP) launch exposes no HTTP readiness and usually no ready marker.
+        // Such a process is considered operational once it has stayed alive past a
+        // short grace period (a failed startup exits the process, caught below).
+        boolean guiMode = lc.requiresDisplay && lc.readiness == null && marker == null;
+        long guiGraceMs = System.currentTimeMillis() + 8000;
         long markerPos = 0;
         boolean ready = false;
         while (System.currentTimeMillis() < deadline) {
@@ -291,6 +296,11 @@ public final class Proc {
                 state.notify("error", p.id, "Runtime crashed during startup",
                         "exit code " + code, "See runtime log: " + log);
                 return "Process exited during startup (code " + code + ").\n" + tail;
+            }
+            if (guiMode && System.currentTimeMillis() >= guiGraceMs) {
+                // Workbench process is alive and past the grace period → operational.
+                ready = true;
+                break;
             }
             if (Probe.probeReady(p, lc, port)) {
                 ready = true;

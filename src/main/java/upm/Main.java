@@ -173,7 +173,7 @@ public final class Main {
         }
     }
 
-    private static void openBrowser(String url, App app) {
+    public static void openBrowser(String url, App app) {
         String cmd = app.browserCommand != null && !app.browserCommand.isBlank()
                 ? app.browserCommand : "xdg-open";
         try {

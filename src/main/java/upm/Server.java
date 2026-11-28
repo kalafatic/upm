@@ -435,6 +435,12 @@ public final class Server {
                 json(ex, 200, Adapters.registryJson());
             } else if ("/api/ports/inventory".equals(path)) {
                 portsInventoryRoute(ex, method);
+            } else if ("/api/ports/process".equals(path)) {
+                portsProcessRoute(ex, method);
+            } else if ("/api/ports/open".equals(path)) {
+                portsOpenRoute(ex, method);
+            } else if ("/api/ports/kill".equals(path)) {
+                portsKillRoute(ex, method);
             } else if ("/api/ports".equals(path)) {
                 json(ex, 200, portsJson());
             } else if ("/api/report".equals(path)) {
@@ -2646,6 +2652,132 @@ public final class Server {
             recomputePortSummary(m);
         }
         json(ex, 200, applyPortFilter(m, appFilter));
+    }
+
+    /** Detailed process owner(s) of a port (Inspect Process / Kill dialogs). */
+    private void portsProcessRoute(HttpExchange ex, String method) throws IOException {
+        if (!"GET".equals(method)) {
+            json(ex, 405, err("GET required"));
+            return;
+        }
+        int port = queryInt(ex, "port", 0);
+        if (port <= 0) {
+            json(ex, 400, err("port query parameter required"));
+            return;
+        }
+        json(ex, 200, Ports.processInfo(port));
+    }
+
+    /** Opens an HTTP/HTTPS port in the OS default browser. */
+    private void portsOpenRoute(HttpExchange ex, String method) throws IOException {
+        if (!"POST".equals(method)) {
+            json(ex, 405, err("POST required"));
+            return;
+        }
+        Map<String, Object> body = readBody(ex);
+        int port = Json.integer(body, "port", 0);
+        String url = Ports.browserUrl(port);
+        if (url == null) {
+            json(ex, 400, err("Port " + port
+                    + " is not an HTTP/HTTPS endpoint and cannot be opened in a browser."));
+            return;
+        }
+        Main.openBrowser(url, app);
+        Map<String, Object> r = new LinkedHashMap<>();
+        r.put("ok", true);
+        r.put("url", url);
+        json(ex, 200, r);
+    }
+
+    /** Terminates the identified process using a port (graceful, then explicit force). */
+    private void portsKillRoute(HttpExchange ex, String method) throws IOException {
+        if (!"POST".equals(method)) {
+            json(ex, 405, err("POST required"));
+            return;
+        }
+        Map<String, Object> body = readBody(ex);
+        int port = Json.integer(body, "port", 0);
+        long pid = Json.integer(body, "pid", 0);
+        boolean force = Json.bool(body, "force", false);
+        if (port <= 0) {
+            json(ex, 400, err("port required"));
+            return;
+        }
+        Map<String, Object> info = Ports.processInfo(port);
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> owners =
+                (List<Map<String, Object>>) info.get("owners");
+        if (owners == null || owners.isEmpty()) {
+            Map<String, Object> r = new LinkedHashMap<>();
+            r.put("result", "PROCESS_ALREADY_EXITED");
+            r.put("port", port);
+            r.put("portAvailable", Ports.isPortFree(port));
+            json(ex, 200, r);
+            return;
+        }
+        long target = 0;
+        if (pid > 0) {
+            boolean isOwner = false;
+            for (Map<String, Object> o : owners) {
+                Object v = o.get("pid");
+                if (v instanceof Number && ((Number) v).longValue() == pid) {
+                    isOwner = true;
+                    break;
+                }
+            }
+            if (!isOwner) {
+                Map<String, Object> r = new LinkedHashMap<>();
+                r.put("result", "OWNERSHIP_CHANGED");
+                r.put("message", "PID " + pid + " no longer owns port " + port + ".");
+                r.put("owners", owners);
+                json(ex, 409, r);
+                return;
+            }
+            target = pid;
+        } else if (owners.size() == 1) {
+            Object v = owners.get(0).get("pid");
+            target = v instanceof Number ? ((Number) v).longValue() : 0;
+        } else {
+            Map<String, Object> r = new LinkedHashMap<>();
+            r.put("result", "MULTIPLE_OWNERS");
+            r.put("message", "Port " + port
+                    + " has multiple owners; specify the pid to terminate.");
+            r.put("owners", owners);
+            json(ex, 409, r);
+            return;
+        }
+        if (target <= 0) {
+            json(ex, 409, err("Cannot identify the owning process of port " + port + "."));
+            return;
+        }
+        Map<String, Object> res = Ports.terminateProcess(target, force);
+        boolean free = Ports.isPortFree(port);
+        res.put("port", port);
+        res.put("portAvailable", free);
+        Map<String, Object> after = Ports.processInfo(port);
+        res.put("ownersAfter", after.get("owners"));
+        if ("PROCESS_TERMINATED".equals(String.valueOf(res.get("result")))) {
+            res.put("result", free ? "PROCESS_TERMINATED_PORT_AVAILABLE"
+                    : "PROCESS_TERMINATED_PORT_STILL_OCCUPIED");
+        }
+        json(ex, 200, res);
+    }
+
+    private static int queryInt(HttpExchange ex, String key, int dflt) {
+        String query = ex.getRequestURI().getQuery();
+        if (query == null) {
+            return dflt;
+        }
+        for (String kv : query.split("&")) {
+            if (kv.startsWith(key + "=")) {
+                try {
+                    return Integer.parseInt(kv.substring(key.length() + 1));
+                } catch (NumberFormatException ignored) {
+                    return dflt;
+                }
+            }
+        }
+        return dflt;
     }
 
     private static Map<String, Object> applyPortFilter(Map<String, Object> m, String appFilter) {

@@ -31,7 +31,8 @@ public final class Ops {
     private final Map<Long, Thread> threads = new ConcurrentHashMap<>();
     private final Map<String, String> projectOp = new ConcurrentHashMap<>();
 
-    private static final Pattern BUILDING = Pattern.compile("\\[INFO\\] Building\\s+([^\\s]+)(?:\\s+(\\d+)/(\\d+))?.*");
+    private static final Pattern BUILDING = Pattern.compile(
+            "\\[INFO\\] Building\\s+(.+?)(?:\\s+\\[(\\d+)/(\\d+)\\])?\\s*$");
     private static final Pattern TESTS_RUN = Pattern.compile(
             "Tests run:\\s*(\\d+),\\s*Failures:\\s*(\\d+),\\s*Errors:\\s*(\\d+),\\s*Skipped:\\s*(\\d+)");
 
